@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 12px;
+      color: #333;
+      padding: 16px;
+      background: #fff;
+    }
+
+    h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #1a1a1a;
+    }
+
+    .section {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 6px;
+      color: #555;
+    }
+
+    input[type="text"],
+    textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 12px;
+      background: #fafafa;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    input[type="text"]:focus,
+    textarea:focus {
+      outline: none;
+      border-color: #0d99ff;
+      box-shadow: 0 0 0 3px rgba(13, 153, 255, 0.1);
+      background: #fff;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    textarea.tall {
+      min-height: 120px;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 10px 16px;
+      border: none;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.2s, transform 0.1s;
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary {
+      background: #0d99ff;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #0b87e3;
+    }
+
+    .btn-success {
+      background: #1bc47d;
+      color: white;
+    }
+
+    .btn-success:hover {
+      background: #17a86b;
+    }
+
+    .btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .divider {
+      height: 1px;
+      background: #eee;
+      margin: 20px 0;
+    }
+
+    .status {
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      margin-top: 12px;
+      display: none;
+    }
+
+    .status.show {
+      display: block;
+    }
+
+    .status.success {
+      background: #e6f9f0;
+      color: #0d7a4a;
+      border: 1px solid #a3e4c9;
+    }
+
+    .status.error {
+      background: #ffeaea;
+      color: #c53030;
+      border: 1px solid #f5a3a3;
+    }
+
+    .status.info {
+      background: #e8f4fd;
+      color: #0b6bcb;
+      border: 1px solid #a3d4f5;
+    }
+
+    .hint {
+      font-size: 10px;
+      color: #888;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>🌐 SmartLocal</h2>
+
+  <div class="section">
+    <label for="languages">Target Languages</label>
+    <input type="text" id="languages" placeholder="es, fr, ja, zh, ko" value="es, fr, ja, zh, ko">
+    <div class="hint">Comma-separated locale codes</div>
+  </div>
+
+  <div class="section">
+    <label for="prompt">Localization Prompt</label>
+    <textarea id="prompt" class="tall">You are an expert UI copywriter and translator. Localize the following UI text for the specified languages.
+
+⚠️ CRITICAL - TEXT MUST FIT:
+- Each text has FIXED width/height. Translations that are too long will BREAK the design.
+- Use "charCount" as your guide: aim to match or be SHORTER than the original.
+- For CJK languages (Chinese, Japanese, Korean): often 50-70% fewer characters needed.
+- Be concise. Use shorter synonyms. Abbreviate if culturally acceptable.
+
+QUALITY REQUIREMENTS:
+1. NATURAL: Write like a native speaker. No machine-translation artifacts.
+2. CULTURALLY FIT: Follow local conventions and idioms.
+3. SAME TONE: Match the original voice (formal, casual, playful).
+
+REFERENCE DATA:
+- "charCount": Original character count — YOUR TARGET LENGTH
+- "lines": Current line count — keep same or fewer
+- "width/height": Text box size in pixels — translation must fit
+
+Return ONLY valid JSON, no explanations.</textarea>
+  </div>
+
+  <div class="section">
+    <button id="generate" class="btn btn-primary">📋 Generate & Copy Prompt</button>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section">
+    <label for="response">Paste AI Response</label>
+    <textarea id="response" class="tall" placeholder='{ "localizations": { "es": { ... }, "fr": { ... } } }'></textarea>
+  </div>
+
+  <div class="section">
+    <button id="apply" class="btn btn-success">✨ Apply Localization</button>
+  </div>
+
+  <div id="status" class="status"></div>
+
+  <script>
+    const languagesInput = document.getElementById('languages');
+    const promptTextarea = document.getElementById('prompt');
+    const responseTextarea = document.getElementById('response');
+    const generateBtn = document.getElementById('generate');
+    const applyBtn = document.getElementById('apply');
+    const statusDiv = document.getElementById('status');
+
+    // Store extracted data for validation
+    let extractedData = null;
+
+    function showStatus(message, type) {
+      statusDiv.textContent = message;
+      statusDiv.className = 'status show ' + type;
+    }
+
+    function hideStatus() {
+      statusDiv.className = 'status';
+    }
+
+    function getTargetLanguages() {
+      return languagesInput.value
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+    }
+
+    // Generate & Copy Prompt
+    generateBtn.onclick = () => {
+      const languages = getTargetLanguages();
+      if (languages.length === 0) {
+        showStatus('Please enter at least one target language', 'error');
+        return;
+      }
+
+      parent.postMessage({
+        pluginMessage: {
+          type: 'generate-prompt',
+          languages: languages,
+          promptTemplate: promptTextarea.value
+        }
+      }, '*');
+    };
+
+    // Apply Localization
+    applyBtn.onclick = () => {
+      const responseText = responseTextarea.value.trim();
+      if (!responseText) {
+        showStatus('Please paste the AI response first', 'error');
+        return;
+      }
+
+      // Parse and validate JSON
+      let response;
+      try {
+        response = JSON.parse(responseText);
+      } catch (e) {
+        showStatus('Invalid JSON format. Please check the response.', 'error');
+        return;
+      }
+
+      // Validate structure
+      if (!response.localizations || typeof response.localizations !== 'object') {
+        showStatus('Missing "localizations" object in response', 'error');
+        return;
+      }
+
+      const languages = getTargetLanguages();
+      const missingLanguages = languages.filter(lang => !response.localizations[lang]);
+      if (missingLanguages.length > 0) {
+        showStatus(`Missing translations for: ${missingLanguages.join(', ')}`, 'error');
+        return;
+      }
+
+      // Validate against extracted data if available
+      if (extractedData && extractedData.texts) {
+        const textIds = extractedData.texts.map(t => t.id);
+        for (const lang of languages) {
+          const langData = response.localizations[lang];
+          const missingIds = textIds.filter(id => !langData.hasOwnProperty(id));
+          if (missingIds.length > 0) {
+            showStatus(`Missing text IDs for ${lang}: ${missingIds.length} texts`, 'error');
+            return;
+          }
+        }
+      }
+
+      parent.postMessage({
+        pluginMessage: {
+          type: 'apply-localization',
+          localizations: response.localizations
+        }
+      }, '*');
+    };
+
+    // Handle messages from plugin
+    window.onmessage = async (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) return;
+
+      if (msg.type === 'copy-to-clipboard') {
+        try {
+          await navigator.clipboard.writeText(msg.text);
+        } catch (e) {
+          // Fallback for older browsers
+          const textarea = document.createElement('textarea');
+          textarea.value = msg.text;
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+        }
+      } else if (msg.type === 'prompt-generated') {
+        extractedData = msg.extractedData;
+        showStatus(`Prompt copied! Found ${msg.textCount} text nodes.`, 'success');
+      } else if (msg.type === 'prompt-error') {
+        showStatus(msg.message, 'error');
+      } else if (msg.type === 'apply-success') {
+        showStatus(`Created ${msg.frameCount} localized frames!`, 'success');
+      } else if (msg.type === 'apply-error') {
+        showStatus(msg.message, 'error');
+      }
+    };
+  </script>
+</body>
+
+</html>
