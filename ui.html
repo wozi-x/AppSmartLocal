@@ -189,7 +189,7 @@
       padding: var(--spacing-sm) var(--spacing-md);
       border-radius: var(--radius-md);
       font-size: 11px;
-      margin-top: var(--spacing-sm);
+      margin-bottom: var(--spacing-md);
       display: none;
       line-height: 1.4;
       animation: fadeIn 0.2s ease-in-out;
@@ -229,6 +229,31 @@
       border: 1px solid #BAE3FF;
     }
 
+    /* Selection Indicator */
+    .selection-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: var(--spacing-sm) var(--spacing-md);
+      background: #F5F5F5;
+      border-radius: var(--radius-md);
+      font-size: 11px;
+      color: var(--text-color);
+      border: 1px solid transparent;
+      transition: all 0.2s ease;
+    }
+
+    .selection-indicator.active {
+      background: #EDF5FA;
+      border-color: #BDE0F5;
+      color: var(--primary-color);
+    }
+
+    .selection-indicator .icon {
+      font-size: 12px;
+      opacity: 0.7;
+    }
+
     /* Icon placeholders - simplified as text for now, could be SVG */
     .icon-text {
       margin-right: 6px;
@@ -239,6 +264,15 @@
 
 <body>
   <div class="container">
+
+    <!-- Status Area (Moved to top) -->
+    <div id="status" class="status"></div>
+
+    <!-- Selection Indicator -->
+    <div id="selection-indicator" class="selection-indicator">
+      <span class="icon">⬜</span>
+      <span id="selection-text">No frame selected</span>
+    </div>
 
     <!-- Input Section -->
     <div class="section">
@@ -283,9 +317,6 @@ Return ONLY valid JSON.</textarea>
       <button id="apply" class="btn btn-success">
         <span class="icon-text">✨</span> Apply Localization
       </button>
-
-      <!-- Status Area -->
-      <div id="status" class="status"></div>
     </div>
 
   </div>
@@ -297,6 +328,14 @@ Return ONLY valid JSON.</textarea>
     const generateBtn = document.getElementById('generate');
     const applyBtn = document.getElementById('apply');
     const statusDiv = document.getElementById('status');
+    const selectionIndicator = document.getElementById('selection-indicator');
+    const selectionText = document.getElementById('selection-text');
+
+    // Initial state
+    generateBtn.disabled = true;
+    generateBtn.title = "Please select a frame to generate prompt";
+    generateBtn.style.opacity = "0.5";
+    generateBtn.style.cursor = "not-allowed";
 
     // Store extracted data for validation
     let extractedData = null;
@@ -412,6 +451,29 @@ Return ONLY valid JSON.</textarea>
         showStatus(`Success! Created ${msg.frameCount} localized frames.`, 'success');
       } else if (msg.type === 'apply-error') {
         showStatus(msg.message, 'error');
+      } else if (msg.type === 'selection-changed') {
+        const isValid = msg.isValid;
+        const nodeName = msg.nodeName || '';
+        const message = msg.message || '';
+
+        // Update indicator
+        if (isValid) {
+          selectionIndicator.classList.add('active');
+          selectionText.textContent = `Selected: ${nodeName}`;
+          // Enable button
+          generateBtn.disabled = false;
+          generateBtn.title = "Generate prompt for selected frame";
+          generateBtn.style.opacity = "1";
+          generateBtn.style.cursor = "pointer";
+        } else {
+          selectionIndicator.classList.remove('active');
+          selectionText.textContent = message || 'No frame selected';
+          // Disable button
+          generateBtn.disabled = true;
+          generateBtn.title = message || "Please select a frame";
+          generateBtn.style.opacity = "0.5";
+          generateBtn.style.cursor = "not-allowed";
+        }
       }
     };
   </script>

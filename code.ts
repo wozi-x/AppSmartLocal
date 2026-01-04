@@ -2,7 +2,54 @@
 // Helps designers localize frames by generating AI-friendly prompts
 
 // Show the UI
-figma.showUI(__html__, { width: 360, height: 520 });
+// Show the UI
+figma.showUI(__html__, { width: 360, height: 550 }); // Increased height slightly for new UI elements
+
+// Check selection on startup
+checkSelection();
+
+// Helper to check selection and notify UI
+function checkSelection() {
+  const selection = figma.currentPage.selection;
+
+  if (selection.length === 0) {
+    figma.ui.postMessage({
+      type: 'selection-changed',
+      isValid: false,
+      message: 'No frame selected'
+    });
+    return;
+  }
+
+  if (selection.length > 1) {
+    figma.ui.postMessage({
+      type: 'selection-changed',
+      isValid: false,
+      message: 'Please select only one frame'
+    });
+    return;
+  }
+
+  const node = selection[0];
+  if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
+    figma.ui.postMessage({
+      type: 'selection-changed',
+      isValid: true,
+      nodeName: node.name
+    });
+  } else {
+    figma.ui.postMessage({
+      type: 'selection-changed',
+      isValid: false,
+      message: 'Selection is not a frame'
+    });
+  }
+}
+
+// Monitor selection changes
+figma.on('selectionchange', () => {
+  checkSelection();
+});
 
 // Types
 interface TextInfo {
