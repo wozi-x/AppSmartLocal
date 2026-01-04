@@ -505,6 +505,42 @@ Return **only valid JSON**.
         let extractedData = null;
         let statusTimeout = null;
 
+        // Debounce timers for saving
+        let saveLocalesTimeout = null;
+        let savePromptTimeout = null;
+
+        // Save locales with debounce (500ms delay)
+        function saveLocales() {
+            if (saveLocalesTimeout) clearTimeout(saveLocalesTimeout);
+            saveLocalesTimeout = setTimeout(() => {
+                parent.postMessage({
+                    pluginMessage: {
+                        type: 'save-locales',
+                        locales: languagesInput.value
+                    }
+                }, '*');
+            }, 500);
+        }
+
+        // Save prompt with debounce (500ms delay)
+        function savePrompt() {
+            if (savePromptTimeout) clearTimeout(savePromptTimeout);
+            savePromptTimeout = setTimeout(() => {
+                parent.postMessage({
+                    pluginMessage: {
+                        type: 'save-prompt',
+                        prompt: promptTextarea.value
+                    }
+                }, '*');
+            }, 500);
+        }
+
+        // Listen for changes on locales input
+        languagesInput.addEventListener('input', saveLocales);
+
+        // Listen for changes on prompt textarea
+        promptTextarea.addEventListener('input', savePrompt);
+
         function showStatus(message, type) {
             if (statusTimeout) {
                 clearTimeout(statusTimeout);
@@ -655,6 +691,15 @@ Return **only valid JSON**.
                     generateBtn.title = message || "Please select a frame";
                     generateBtn.style.opacity = "0.5";
                     generateBtn.style.cursor = "not-allowed";
+                }
+            } else if (msg.type === 'load-saved-settings') {
+                // Load saved locales if available
+                if (msg.locales !== null && msg.locales !== undefined) {
+                    languagesInput.value = msg.locales;
+                }
+                // Load saved prompt if available
+                if (msg.prompt !== null && msg.prompt !== undefined) {
+                    promptTextarea.value = msg.prompt;
                 }
             }
         };

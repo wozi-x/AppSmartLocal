@@ -1,7 +1,10 @@
 // SmartLocal - Figma Localization Plugin
 // Helps designers localize frames by generating AI-friendly prompts
 
-// Show the UI
+// Storage keys for persisting user preferences
+const STORAGE_KEY_LOCALES = 'smartlocal_locales';
+const STORAGE_KEY_PROMPT = 'smartlocal_prompt';
+
 // Show the UI
 figma.showUI(__html__, { width: 360, height: 480 }); // Reduced height to fit content better
 
@@ -127,8 +130,22 @@ function buildNodeMapping(original: SceneNode, cloned: SceneNode, mapping: Map<s
 // Handle messages from UI
 figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
 
-  // UI Ready - Check initial selection
+  // UI Ready - Load saved settings and check initial selection
   if (msg.type === 'ui-ready') {
+    // Load saved settings from clientStorage
+    try {
+      const savedLocales = await figma.clientStorage.getAsync(STORAGE_KEY_LOCALES);
+      const savedPrompt = await figma.clientStorage.getAsync(STORAGE_KEY_PROMPT);
+
+      figma.ui.postMessage({
+        type: 'load-saved-settings',
+        locales: savedLocales || null,
+        prompt: savedPrompt || null
+      });
+    } catch (err) {
+      console.warn('Failed to load saved settings:', err);
+    }
+
     checkSelection();
   }
 
@@ -378,5 +395,23 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
   // Handle clipboard copy request from UI
   if (msg.type === 'copy-complete') {
     // Clipboard copy handled in UI
+  }
+
+  // Save locales to clientStorage
+  if (msg.type === 'save-locales') {
+    try {
+      await figma.clientStorage.setAsync(STORAGE_KEY_LOCALES, msg.locales as string);
+    } catch (err) {
+      console.warn('Failed to save locales:', err);
+    }
+  }
+
+  // Save prompt to clientStorage
+  if (msg.type === 'save-prompt') {
+    try {
+      await figma.clientStorage.setAsync(STORAGE_KEY_PROMPT, msg.prompt as string);
+    } catch (err) {
+      console.warn('Failed to save prompt:', err);
+    }
   }
 };
