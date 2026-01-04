@@ -302,7 +302,8 @@
         <!-- Input Section -->
         <div class="section">
             <label class="label" for="languages">Target Languages</label>
-            <input type="text" id="languages" placeholder="e.g. es, fr, ja, zh, ko" value="es, fr, ja, zh, ko">
+            <input type="text" id="languages" placeholder="e.g. de-DE, en-US, fr-FR, ja, ko, pt-BR, zh-Hans, zh-Hant"
+                value="de-DE, en-US, fr-FR, ja, ko, pt-BR, zh-Hans, zh-Hant">
             <div class="hint">Comma-separated locale codes</div>
         </div>
 
@@ -312,46 +313,102 @@
             <textarea id="prompt" class="tall">You are a senior localization specialist for mobile app UI copy.
 
 ## TASK
-Translate UI strings while **strictly respecting character limits**. Overflow breaks the UI.
+Translate UI strings to **match the original design's visual balance** while sounding natural in each target language.
 
-## CRITICAL CONSTRAINT: CHARACTER COUNT
-⚠️ **`charCount` is a HARD LIMIT, not a suggestion.**
+## CRITICAL CONSTRAINT: LENGTH MATCHING
 
-- Your translation MUST be ≤ `charCount` (ideally shorter)
-- **Count carefully before finalizing**
-- If a natural translation exceeds the limit → **rewrite shorter**, don't force it
+### Target: Match `charCount` as closely as possible
 
-### Length Strategy (when over limit):
-1. **Remove articles**: "the", "a", "les", "un" → often unnecessary in UI
-2. **Use shorter synonyms**: "Collect" → "Get", "récompense" → "bonus"
-3. **Compress phrases**: "at a glance" → "快速查看" (not "一目了然地查看")
-4. **Truncate gracefully**: Preserve core meaning, cut modifiers
-5. **Use contractions/abbreviations** where natural in the language
+| Difference | Status | Action |
+|------------|--------|--------|
+| ±0-2 chars | ✅ Ideal | Perfect match |
+| ±3-5 chars | ⚠️ Acceptable | Try to get closer |
+| +6 or more | ❌ Overflow | Rewrite shorter |
+| -6 or more | ❌ Too short | Expand naturally |
 
-### Language-Specific Length Tips:
-| Language | Typical expansion | Compression strategies |
-|----------|------------------|------------------------|
-| **es** | +20-30% | Drop articles, use infinitives |
-| **fr** | +15-25% | Drop articles, shorter synonyms |
-| **ja** | Varies (wider glyphs) | Use katakana for loanwords, shorter verb forms |
-| **zh** | Often shorter | 4-character idioms, drop particles |
-| **ko** | Similar length | Use 해 instead of 해요, drop particles |
+**Why this matters:**
+- Too long → text overflows, truncates, breaks UI
+- Too short → awkward whitespace, unbalanced visual design
+- Just right → maintains designer's intended visual rhythm
 
-## EXAMPLES: Fixing Overflow
+### Length-Matching Strategies:
 
-| Original (charCount) | ❌ Too Long | ✅ Within Limit |
-|---------------------|-------------|-----------------|
-| "Collect cute stickers" (21) | "Collectionne les stickers" (25) | "Stickers mignons" (16) |
-| "Collect cute stickers" (21) | "かわいいシールを集めよう" (12 chars but wide) | "シールを集めよう" (8) |
-| "Words at a glance" (17) | "Palabras de un vistazo" (22) | "Palabras rápidas" (16) |
-| "Words at a glance" (17) | "一目で分かる単語" (8) | ✅ Already fits |
+**If too long:**
+- Drop articles (the, a, les, un, el)
+- Use shorter synonyms
+- Remove filler words
 
-## OUTPUT REQUIREMENTS
+**If too short:**
+- Add natural particles/softeners
+- Use slightly longer synonyms
+- Add appropriate emphasis words
 
-1. **Verify each translation**: `len(translation) ≤ charCount`
-2. **Preserve emojis exactly** (emojis don't count toward charCount)
-3. **Maintain tone** while prioritizing fit
-4. Return **only valid JSON**—no markdown, no commentary
+---
+
+## CULTURAL & LINGUISTIC NATURALNESS
+
+Write like a native copywriter at a top local app—not a translator.
+
+### Chinese (zh) — Modern, casual Mainland style
+| ❌ Avoid | ✅ Use Instead |
+|----------|---------------|
+| Literary idioms (字字珠玑, 一目了然) | Conversational (每词都算, 快速看) |
+| Formal structure (滑动以成长) | Natural flow (滑动变强, 越学越多) |
+| Stiff verbs (获取, 收集) | Casual verbs (拿, 集, 攒) |
+
+**Tone**: 小红书, 抖音, 多邻国 — friendly, playful, young
+
+---
+
+### Japanese (ja) — Friendly, approachable
+| ❌ Avoid | ✅ Use Instead |
+|----------|---------------|
+| Formal (収集しましょう) | Casual (集めよう) |
+| Stiff kanji-heavy | Mix hiragana for softness |
+| Literal translations | Natural game/app phrasing |
+
+**Tone**: Duolingo JP, LINE — warm, encouraging
+
+---
+
+### Korean (ko) — Casual 해요체 or soft 반말
+| ❌ Avoid | ✅ Use Instead |
+|----------|---------------|
+| Formal (수집하세요, 획득) | Friendly (모아봐, 받기) |
+| Corporate tone | Playful, youthful |
+
+**Tone**: 토스, 당근마켓 — modern, friendly
+
+---
+
+### Spanish (es) — Casual Latin American
+| ❌ Avoid | ✅ Use Instead |
+|----------|---------------|
+| Formal (Adquiera, Visualice) | Direct (Gana, Mira) |
+| Wordy phrases | Punchy, short |
+
+**Tone**: Duolingo ES — fun, direct
+
+---
+
+### French (fr) — Casual tutoiement
+| ❌ Avoid | ✅ Use Instead |
+|----------|---------------|
+| Vous form | Tu form |
+| Long phrases | Compact, modern |
+
+**Tone**: French startup apps — casual, friendly
+
+---
+
+## QUALITY CHECKLIST (Per String)
+
+1. **Length**: Is it within ±3 chars of `charCount`?
+2. **Natural**: Would a young native speaker say this?
+3. **Tone**: Does it feel like a popular local app?
+4. **No red flags**: Free of literary/formal/textbook phrasing?
+
+---
 
 ## INPUT FORMAT
 ```json
@@ -360,7 +417,7 @@ Translate UI strings while **strictly respecting character limits**. Overflow br
     {
       "id": "string",
       "text": "original text",
-      "charCount": number,  // ⚠️ HARD LIMIT
+      "charCount": number,  // 🎯 TARGET LENGTH TO MATCH
       "lines": number
     }
   ],
@@ -369,16 +426,20 @@ Translate UI strings while **strictly respecting character limits**. Overflow br
 ```
 
 ## OUTPUT FORMAT
+Return **only valid JSON**.
 ```json
 {
   "localizations": {
     "<lang_code>": {
-      "<id>": "translated text (must be ≤ charCount)"
+      "<id>": "translated text"
     }
   }
 }
 ```
-</textarea>
+
+---
+
+**Translate the following, matching each string's target length:**</textarea>
         </div>
 
         <div class="section">
