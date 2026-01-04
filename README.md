@@ -8,11 +8,11 @@ SmartLocal bridges the gap between Figma designs and AI translation. Instead of 
 
 ## ✨ Features
 
--   **🤖 AI-Agnostic**: You control the translation. Use your custom GPTs, specialized prompts, or any LLM.
--   **🎨 Perfect Style Match**: Preserves fonts, weights, colors, autolayout, and complex text styles.
--   **🚀 Batch Localization**: Generate multiple locales (e.g., `en`, `es`, `ja`, `de`) in a single pass.
--   **📏 Layout Safe**: Automatically clones and positions localized frames below the original for easy comparison.
--   **🧠 Context-Aware**: Extracts text hierarchy to help AI understand what it's translating (headings, buttons, body).
+-   **🤖 AI-Agnostic**: Use any LLM (ChatGPT, Claude, etc.) with generated prompts.
+-   **🎨 Perfect Style Preservation**: Maintains fonts, colors, and auto-layout.
+-   **🚀 Batch Localization**: Generate multiple languages in one pass.
+-   **📏 Non-Destructive**: Clones and positions localized frames below originals.
+-   **🧠 Context-Aware**: Extracts text hierarchy for better translations.
 
 ## 🛠️ How It Works
 
@@ -63,4 +63,4 @@ npm run watch
 SmartLocal runs entirely locally in your Figma instance. It does not send your design data to any third-party server. Text is only exported to your clipboard when you explicitly click "Generate".
 
 ## 📄 License
-MIT
+AGPL-3.0
