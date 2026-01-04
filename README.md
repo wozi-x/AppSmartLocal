@@ -1,42 +1,66 @@
 # SmartLocal
 
-A Figma plugin for localizing UI designs with AI assistance.
+**Effortless Figma Localization with Your Preferred AI.**
 
-## How It Works
+SmartLocal bridges the gap between Figma designs and AI translation. Instead of relying on rigid, built-in translation services, SmartLocal generates context-aware prompts that you can use with **any** AI tool (ChatGPT, Claude, DeepL, etc.) to get high-quality, culturally relevant translations.
 
-1. **Select a frame** with text content in Figma
-2. **Generate prompt** - Plugin extracts all text and creates an AI-ready prompt
-3. **Copy to AI** - Paste the prompt to your favorite AI language model
-4. **Get translations** - AI returns JSON with localized text
-5. **Apply** - Plugin creates duplicated frames with translated text
+![Banner Image](https://placehold.co/600x400?text=SmartLocal+Banner)
 
-## Installation
+## ✨ Features
 
-1. Open Figma Desktop
-2. Go to **Plugins → Development → Import plugin from manifest**
-3. Select the `manifest.json` file from this directory
+-   **🤖 AI-Agnostic**: You control the translation. Use your custom GPTs, specialized prompts, or any LLM.
+-   **🎨 Perfect Style Match**: Preserves fonts, weights, colors, autolayout, and complex text styles.
+-   **🚀 Batch Localization**: Generate multiple locales (e.g., `en`, `es`, `ja`, `de`) in a single pass.
+-   **📏 Layout Safe**: Automatically clones and positions localized frames below the original for easy comparison.
+-   **🧠 Context-Aware**: Extracts text hierarchy to help AI understand what it's translating (headings, buttons, body).
 
-## Development
+## 🛠️ How It Works
+
+1.  **Select**: Click on any Frame, Component, or Instance in Figma.
+2.  **Generate**: Open SmartLocal, enter your target languages (e.g., `es, fr`), and click **Generate Prompt**.
+3.  **Translate**: Paste the generated prompt into your AI tool (ChatGPT, Claude, etc.).
+4.  **Apply**: Copy the JSON response from the AI and paste it back into SmartLocal.
+5.  **Done**: Watch as SmartLocal creates perfectly styled duplicates for each language!
+
+## 📦 Installation
+
+1.  Download this repository.
+2.  Open Figma Desktop App.
+3.  Go to **Menu > Plugins > Development > Import plugin from manifest...**.
+4.  Select `manifest.json` from the `AppSmartLocal` folder.
+
+## 💻 Usage
+
+### Generating Translations
+1.  Select a frame with text.
+2.  Run **SmartLocal**.
+3.  In the "Target Languages" input, type codes like `es` (Spanish), `fr` (French), `jp` (Japanese).
+4.  Hit **Generate & Copy Prompt**.
+5.  Go to ChatGPT/Claude and paste.
+
+### Applying Translations
+1.  Copy the JSON code block returned by the AI.
+2.  Paste it into the plugin's text area.
+3.  Ensure the **original frame** is still selected.
+4.  Click **Apply Localization**.
+
+*Tip: If the AI adds extra text before/after the JSON, just copy strictly the `{ ... }` JSON part.*
+
+## ⚙️ Development
 
 ```bash
 # Install dependencies
 npm install
 
-# Build once
+# Build the plugin
 npm run build
 
-# Watch for changes
+# Watch mode for development
 npm run watch
 ```
 
-## Usage
+## 🔒 Privacy & Security
+SmartLocal runs entirely locally in your Figma instance. It does not send your design data to any third-party server. Text is only exported to your clipboard when you explicitly click "Generate".
 
-1. Select a frame containing text elements
-2. Enter target languages (e.g., `es, fr, ja, zh`)
-3. Click **Generate & Copy Prompt**
-4. Paste the prompt into an AI like ChatGPT or Claude
-5. Copy the JSON response
-6. Paste it into the plugin's response area
-7. Click **Apply Localization**
-
-The plugin will create new frames below the original, named with locale suffixes (e.g., `MyFrame_es`, `MyFrame_fr`).
+## 📄 License
+MIT

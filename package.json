@@ -1,7 +1,7 @@
 {
   "name": "SmartLocal",
   "version": "1.0.0",
-  "description": "Your Figma Plugin",
+  "description": "Effortless Figma Localization with Your Preferred AI",
   "main": "code.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",

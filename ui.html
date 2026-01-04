@@ -3,6 +3,31 @@
 
 <head>
   <style>
+    :root {
+      --primary-color: #18A0FB;
+      /* Figma Blue */
+      --primary-hover: #0D86D8;
+      --bg-color: #FFFFFF;
+      --text-color: #333333;
+      --label-color: #5E5E5E;
+      /* Muted text for labels */
+      --border-color: #E6E6E6;
+      --input-bg: #FFFFFF;
+      --success-bg: #E6F9F0;
+      --success-color: #0D7A4A;
+      --success-border: #A3E4C9;
+      --error-bg: #FFEAEA;
+      --error-color: #C53030;
+      --error-border: #F5A3A3;
+      --spacing-xs: 4px;
+      --spacing-sm: 8px;
+      --spacing-md: 12px;
+      --spacing-lg: 16px;
+      --radius-sm: 2px;
+      /* Figma uses smaller radii */
+      --radius-md: 6px;
+    }
+
     * {
       box-sizing: border-box;
       margin: 0;
@@ -10,111 +35,176 @@
     }
 
     body {
-      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 12px;
-      color: #333;
-      padding: 16px;
-      background: #fff;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 11px;
+      /* Figma standard is often 11px or 12px */
+      color: var(--text-color);
+      background: var(--bg-color);
+      cursor: default;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
     }
 
-    h2 {
-      font-size: 16px;
-      font-weight: 600;
-      margin-bottom: 16px;
-      color: #1a1a1a;
+    .container {
+      padding: var(--spacing-lg);
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-lg);
     }
 
-    .section {
-      margin-bottom: 16px;
-    }
-
-    label {
+    /* Typography */
+    .label {
       display: block;
       font-weight: 500;
-      margin-bottom: 6px;
-      color: #555;
+      /* Inter Medium */
+      margin-bottom: var(--spacing-xs);
+      color: var(--label-color);
+      font-size: 11px;
     }
 
+    .hint {
+      font-size: 10px;
+      color: #888;
+      margin-top: var(--spacing-xs);
+      line-height: 1.4;
+    }
+
+    /* Inputs */
     input[type="text"],
     textarea {
       width: 100%;
-      padding: 10px 12px;
-      border: 1px solid #ddd;
-      border-radius: 6px;
+      padding: var(--spacing-sm);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
       font-family: inherit;
-      font-size: 12px;
-      background: #fafafa;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      font-size: 11px;
+      background: var(--input-bg);
+      color: var(--text-color);
+      transition: border-color 0.15s ease-in-out;
     }
 
     input[type="text"]:focus,
     textarea:focus {
       outline: none;
-      border-color: #0d99ff;
-      box-shadow: 0 0 0 3px rgba(13, 153, 255, 0.1);
-      background: #fff;
+      border-color: var(--primary-color);
+      box-shadow: 0 0 0 1px var(--primary-color);
+      /* Figma style focus */
+    }
+
+    input:hover,
+    textarea:hover {
+      border-color: #ccc;
+    }
+
+    input:focus:hover,
+    textarea:focus:hover {
+      border-color: var(--primary-color);
     }
 
     textarea {
       resize: vertical;
-      min-height: 80px;
+      min-height: 60px;
+      line-height: 1.4;
     }
 
     textarea.tall {
-      min-height: 120px;
+      min-height: 140px;
     }
 
+    /* Buttons */
     .btn {
       width: 100%;
-      padding: 10px 16px;
+      padding: var(--spacing-sm) var(--spacing-md);
       border: none;
-      border-radius: 6px;
+      border-radius: var(--radius-md);
       font-family: inherit;
-      font-size: 12px;
-      font-weight: 500;
+      font-size: 11px;
+      font-weight: 600;
+      /* Inter SemiBold */
       cursor: pointer;
-      transition: background-color 0.2s, transform 0.1s;
+      transition: all 0.1s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 32px;
+      /* Standard button height */
     }
 
     .btn:active {
-      transform: scale(0.98);
+      transform: translateY(1px);
     }
 
     .btn-primary {
-      background: #0d99ff;
+      background: var(--primary-color);
       color: white;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
     }
 
     .btn-primary:hover {
-      background: #0b87e3;
+      background: var(--primary-hover);
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-color);
+    }
+
+    .btn-secondary:hover {
+      border-color: #b3b3b3;
     }
 
     .btn-success {
-      background: #1bc47d;
+      background: #1BC47D;
       color: white;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
     }
 
     .btn-success:hover {
-      background: #17a86b;
+      background: #14a366;
     }
 
-    .btn:disabled {
-      background: #ccc;
-      cursor: not-allowed;
-    }
-
+    /* Layout Components */
     .divider {
       height: 1px;
-      background: #eee;
-      margin: 20px 0;
+      background: var(--border-color);
+      width: 100%;
+      margin: var(--spacing-sm) 0;
     }
 
+    .section {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .row {
+      display: flex;
+      gap: var(--spacing-md);
+      align-items: center;
+    }
+
+    /* Status Notifications */
     .status {
-      padding: 10px 12px;
-      border-radius: 6px;
+      padding: var(--spacing-sm) var(--spacing-md);
+      border-radius: var(--radius-md);
       font-size: 11px;
-      margin-top: 12px;
+      margin-top: var(--spacing-sm);
       display: none;
+      line-height: 1.4;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(-2px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .status.show {
@@ -122,79 +212,83 @@
     }
 
     .status.success {
-      background: #e6f9f0;
-      color: #0d7a4a;
-      border: 1px solid #a3e4c9;
+      background: var(--success-bg);
+      color: var(--success-color);
+      border: 1px solid var(--success-border);
     }
 
     .status.error {
-      background: #ffeaea;
-      color: #c53030;
-      border: 1px solid #f5a3a3;
+      background: var(--error-bg);
+      color: var(--error-color);
+      border: 1px solid var(--error-border);
     }
 
     .status.info {
-      background: #e8f4fd;
-      color: #0b6bcb;
-      border: 1px solid #a3d4f5;
+      background: #F0F9FF;
+      color: #0077D4;
+      border: 1px solid #BAE3FF;
     }
 
-    .hint {
-      font-size: 10px;
-      color: #888;
-      margin-top: 4px;
+    /* Icon placeholders - simplified as text for now, could be SVG */
+    .icon-text {
+      margin-right: 6px;
+      font-size: 12px;
     }
   </style>
 </head>
 
 <body>
-  <h2>🌐 SmartLocal</h2>
+  <div class="container">
 
-  <div class="section">
-    <label for="languages">Target Languages</label>
-    <input type="text" id="languages" placeholder="es, fr, ja, zh, ko" value="es, fr, ja, zh, ko">
-    <div class="hint">Comma-separated locale codes</div>
+    <!-- Input Section -->
+    <div class="section">
+      <label class="label" for="languages">Target Languages</label>
+      <input type="text" id="languages" placeholder="e.g. es, fr, ja, zh, ko" value="es, fr, ja, zh, ko">
+      <div class="hint">Comma-separated locale codes</div>
+    </div>
+
+    <!-- Prompt Section -->
+    <div class="section">
+      <label class="label" for="prompt">Localization Prompt Template</label>
+      <textarea id="prompt" class="tall">You are an expert UI copywriter. Localize the following UI text.
+
+⚠️ CRITICAL CONSTRAINTS:
+- Translations must FIT existing fixed-size containers.
+- Use "charCount" as a guide: translations should be similar or shorter length.
+- For CJK (Chinese/Japanese/Korean): ~50-70% character count of English.
+- Style: Natural, native-like, matching the original tone.
+
+Reference Data:
+- "charCount": Original length.
+- "lines": Current lines (do not exceed).
+
+Return ONLY valid JSON.</textarea>
+    </div>
+
+    <div class="section">
+      <button id="generate" class="btn btn-primary">
+        <span class="icon-text">📋</span> Generate & Copy Prompt
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Response Section -->
+    <div class="section">
+      <label class="label" for="response">Paste AI Response JSON</label>
+      <textarea id="response" placeholder='{ "localizations": { "es": { ... } } }'></textarea>
+    </div>
+
+    <div class="section">
+      <button id="apply" class="btn btn-success">
+        <span class="icon-text">✨</span> Apply Localization
+      </button>
+
+      <!-- Status Area -->
+      <div id="status" class="status"></div>
+    </div>
+
   </div>
-
-  <div class="section">
-    <label for="prompt">Localization Prompt</label>
-    <textarea id="prompt" class="tall">You are an expert UI copywriter and translator. Localize the following UI text for the specified languages.
-
-⚠️ CRITICAL - TEXT MUST FIT:
-- Each text has FIXED width/height. Translations that are too long will BREAK the design.
-- Use "charCount" as your guide: aim to match or be SHORTER than the original.
-- For CJK languages (Chinese, Japanese, Korean): often 50-70% fewer characters needed.
-- Be concise. Use shorter synonyms. Abbreviate if culturally acceptable.
-
-QUALITY REQUIREMENTS:
-1. NATURAL: Write like a native speaker. No machine-translation artifacts.
-2. CULTURALLY FIT: Follow local conventions and idioms.
-3. SAME TONE: Match the original voice (formal, casual, playful).
-
-REFERENCE DATA:
-- "charCount": Original character count — YOUR TARGET LENGTH
-- "lines": Current line count — keep same or fewer
-- "width/height": Text box size in pixels — translation must fit
-
-Return ONLY valid JSON, no explanations.</textarea>
-  </div>
-
-  <div class="section">
-    <button id="generate" class="btn btn-primary">📋 Generate & Copy Prompt</button>
-  </div>
-
-  <div class="divider"></div>
-
-  <div class="section">
-    <label for="response">Paste AI Response</label>
-    <textarea id="response" class="tall" placeholder='{ "localizations": { "es": { ... }, "fr": { ... } } }'></textarea>
-  </div>
-
-  <div class="section">
-    <button id="apply" class="btn btn-success">✨ Apply Localization</button>
-  </div>
-
-  <div id="status" class="status"></div>
 
   <script>
     const languagesInput = document.getElementById('languages');
@@ -230,6 +324,7 @@ Return ONLY valid JSON, no explanations.</textarea>
         showStatus('Please enter at least one target language', 'error');
         return;
       }
+      hideStatus();
 
       parent.postMessage({
         pluginMessage: {
@@ -247,6 +342,7 @@ Return ONLY valid JSON, no explanations.</textarea>
         showStatus('Please paste the AI response first', 'error');
         return;
       }
+      hideStatus();
 
       // Parse and validate JSON
       let response;
@@ -300,7 +396,6 @@ Return ONLY valid JSON, no explanations.</textarea>
         try {
           await navigator.clipboard.writeText(msg.text);
         } catch (e) {
-          // Fallback for older browsers
           const textarea = document.createElement('textarea');
           textarea.value = msg.text;
           document.body.appendChild(textarea);
@@ -310,11 +405,11 @@ Return ONLY valid JSON, no explanations.</textarea>
         }
       } else if (msg.type === 'prompt-generated') {
         extractedData = msg.extractedData;
-        showStatus(`Prompt copied! Found ${msg.textCount} text nodes.`, 'success');
+        showStatus(`Prompt copied! Found ${msg.textCount} text nodes to localize.`, 'success');
       } else if (msg.type === 'prompt-error') {
         showStatus(msg.message, 'error');
       } else if (msg.type === 'apply-success') {
-        showStatus(`Created ${msg.frameCount} localized frames!`, 'success');
+        showStatus(`Success! Created ${msg.frameCount} localized frames.`, 'success');
       } else if (msg.type === 'apply-error') {
         showStatus(msg.message, 'error');
       }
