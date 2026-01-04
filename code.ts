@@ -3,10 +3,10 @@
 
 // Show the UI
 // Show the UI
-figma.showUI(__html__, { width: 360, height: 550 }); // Increased height slightly for new UI elements
+figma.showUI(__html__, { width: 360, height: 480 }); // Reduced height to fit content better
 
-// Check selection on startup
-checkSelection();
+// Check selection on startup (remove potential race condition, rely on ui-ready)
+// checkSelection();
 
 // Helper to check selection and notify UI
 function checkSelection() {
@@ -126,6 +126,11 @@ function buildNodeMapping(original: SceneNode, cloned: SceneNode, mapping: Map<s
 
 // Handle messages from UI
 figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
+
+  // UI Ready - Check initial selection
+  if (msg.type === 'ui-ready') {
+    checkSelection();
+  }
 
   // Generate Prompt
   if (msg.type === 'generate-prompt') {
