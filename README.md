@@ -4,6 +4,8 @@
 
 SmartLocal bridges the gap between Figma designs and AI translation. Instead of relying on rigid, built-in translation services, SmartLocal generates context-aware prompts that you can use with **any** AI tool (ChatGPT, Claude, DeepL, etc.) to get high-quality, culturally relevant translations.
 
+[**👉 Try it on Figma Community**](https://www.figma.com/community/plugin/1589498837344174364/smartlocal)
+
 ## ✨ Features
 
 -   **🤖 AI-Agnostic**: Use any LLM (ChatGPT, Claude, etc.) with generated prompts.
@@ -21,6 +23,12 @@ SmartLocal bridges the gap between Figma designs and AI translation. Instead of 
 5.  **Done**: Watch as SmartLocal creates perfectly styled duplicates for each language!
 
 ## 📦 Installation
+
+### 🚀 From Figma Community (Recommended)
+
+Install SmartLocal directly from the [Figma Community](https://www.figma.com/community/plugin/1589498837344174364/smartlocal).
+
+### 🛠️ For Developers (Manual)
 
 1.  Download this repository.
 2.  Open Figma Desktop App.
