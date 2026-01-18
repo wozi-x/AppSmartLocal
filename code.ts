@@ -78,8 +78,17 @@ interface Localizations {
 
 // Extract all text nodes from a frame recursively
 function extractTextNodes(node: SceneNode, texts: TextInfo[]): void {
+  // console.log(`Processing node: ${node.name} (${node.type})`);
+
   if (node.type === 'TEXT') {
     const textNode = node as TextNode;
+    // console.log(`  -> Found TEXT node: "${textNode.characters}" (ID: ${textNode.id}) visible: ${textNode.visible}`);
+
+    // Skip invisible nodes
+    if (!textNode.visible) {
+      console.log(`  -> Skipping invisible node: ${textNode.name}`);
+      return;
+    }
 
     // Calculate approximate line count based on text height and font size
     let lines = 1;
@@ -181,6 +190,11 @@ figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
     // Extract text nodes
     const texts: TextInfo[] = [];
     extractTextNodes(selectedNode, texts);
+
+    console.log(`Total text nodes found in "${selectedNode.name}":`, texts.length);
+    if (texts.length > 0) {
+      console.log('Sample extracted text:', texts.slice(0, 3).map(t => t.text));
+    }
 
     if (texts.length === 0) {
       figma.ui.postMessage({
@@ -320,55 +334,56 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
           const textNode = nodeMapping.get(originalId);
           if (textNode) {
             try {
-              // Store ALL current styles BEFORE any modification
-              const fills = [...(textNode.fills as Paint[])];
-              const strokes = [...(textNode.strokes as Paint[])];
-              const effects = [...(textNode.effects as Effect[])];
-              const textStyleId = textNode.textStyleId;
-              const fontSize = textNode.fontSize;
-              const fontName = textNode.fontName;
-              const textAlignHorizontal = textNode.textAlignHorizontal;
-              const textAlignVertical = textNode.textAlignVertical;
-              const letterSpacing = textNode.letterSpacing;
-              const lineHeight = textNode.lineHeight;
-              const textDecoration = textNode.textDecoration;
-              const textCase = textNode.textCase;
+              // Get all segments to find the "Dominant Style"
+              // (The style used by the majority of the characters)
+              const segments = textNode.getStyledTextSegments([
+                'fontName',
+                'fontSize',
+                'fills',
+                'lineHeight',
+                'letterSpacing',
+                'textDecoration',
+                'textCase'
+              ]);
+
+              // Guard against empty text nodes
+              if (segments.length === 0) {
+                textNode.characters = translatedText;
+                continue; // Skip to next text node
+              }
+
+              let dominantSegment = segments[0];
+              let maxLen = 0;
+
+              for (const seg of segments) {
+                const len = seg.end - seg.start;
+                if (len > maxLen) {
+                  maxLen = len;
+                  dominantSegment = seg;
+                }
+              }
+
+              // Ensure the dominant font is loaded before we try to apply it
+              // (We pre-loaded fonts earlier, but this is a safety double-check for the specific one we want to set)
+              const dominantFontName = dominantSegment.fontName;
+              if (dominantFontName && (dominantFontName as any) !== figma.mixed) {
+                await figma.loadFontAsync(dominantFontName);
+              }
 
               // Replace text content
+              // Figma will initially apply the style of index 0
               textNode.characters = translatedText;
 
-              // Restore all visual styles
-              textNode.fills = fills;
-              textNode.strokes = strokes;
-              textNode.effects = effects;
+              // Force apply the Dominant Style to the whole string
+              // This fixes issues where index 0 was a bullet point/icon with a different style
+              if ((dominantSegment.fontSize as any) !== figma.mixed) textNode.fontSize = dominantSegment.fontSize;
+              if ((dominantSegment.fontName as any) !== figma.mixed) textNode.fontName = dominantSegment.fontName;
+              if ((dominantSegment.fills as any) !== figma.mixed) textNode.fills = dominantSegment.fills;
+              if ((dominantSegment.lineHeight as any) !== figma.mixed) textNode.lineHeight = dominantSegment.lineHeight;
+              if ((dominantSegment.letterSpacing as any) !== figma.mixed) textNode.letterSpacing = dominantSegment.letterSpacing;
+              if ((dominantSegment.textDecoration as any) !== figma.mixed) textNode.textDecoration = dominantSegment.textDecoration;
+              if ((dominantSegment.textCase as any) !== figma.mixed) textNode.textCase = dominantSegment.textCase;
 
-              // Restore text properties if not mixed
-              if (fontSize !== figma.mixed) {
-                textNode.fontSize = fontSize;
-              }
-              if (fontName !== figma.mixed) {
-                textNode.fontName = fontName;
-              }
-              // textAlign properties are always strings
-              textNode.textAlignHorizontal = textAlignHorizontal;
-              textNode.textAlignVertical = textAlignVertical;
-              if (letterSpacing !== figma.mixed) {
-                textNode.letterSpacing = letterSpacing;
-              }
-              if (lineHeight !== figma.mixed) {
-                textNode.lineHeight = lineHeight;
-              }
-              if (textDecoration !== figma.mixed) {
-                textNode.textDecoration = textDecoration;
-              }
-              if (textCase !== figma.mixed) {
-                textNode.textCase = textCase;
-              }
-
-              // Restore text style if it was applied
-              if (typeof textStyleId === 'string' && textStyleId !== '') {
-                textNode.textStyleId = textStyleId;
-              }
             } catch (textErr) {
               console.warn(`Text replacement error for ${originalId}:`, textErr);
               // Continue with other text nodes
