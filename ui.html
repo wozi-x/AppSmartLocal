@@ -284,6 +284,27 @@
             margin-right: 6px;
             font-size: 12px;
         }
+
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--text-color);
+            margin-bottom: var(--spacing-xs);
+        }
+
+        .image-source-fields {
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-sm);
+            margin-top: var(--spacing-sm);
+        }
+
+        .image-source-fields.disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
     </style>
 </head>
 
@@ -303,7 +324,7 @@
         <div class="section">
             <label class="label" for="languages">Target Languages</label>
             <input type="text" id="languages" placeholder="e.g. de-DE, en-US, fr-FR, ja, ko, pt-BR, zh-Hans, zh-Hant"
-                value="de-DE, en-US, fr-FR, ja, ko, pt-BR, zh-Hans, zh-Hant">
+                value="de-DE, en-AU, en-CA, en-GB, en-US, es-ES, fr-FR, hi, id, it, ja, ko, pl, pt-BR, ru, th, tr, vi, zh-Hans, zh-Hant">
             <div class="hint">Comma-separated locale codes</div>
         </div>
 
@@ -421,9 +442,17 @@ Write like a native copywriter at a top local app—not a translator.
       "lines": number
     }
   ],
+  "images": [
+    {
+      "id": "string",        // Image node ID
+      "nodeName": "string",  // Image layer name
+      "fillIndex": number    // Index of IMAGE paint in node.fills
+    }
+  ],
   "targetLanguages": ["es", "fr", "ja", "zh", "ko"]
 }
 ```
+`images` is included only when visible image layers are found.
 
 ## OUTPUT FORMAT
 Return **only valid JSON**.
@@ -439,7 +468,8 @@ Return **only valid JSON**.
 
 ---
 
-**Translate the following, matching each string's target length:**</textarea>
+**Translate the following, matching each string's target length:**
+</textarea>
         </div>
 
         <div class="section">
@@ -452,6 +482,22 @@ Return **only valid JSON**.
         <div class="section">
             <label class="label" for="response">Paste AI Response JSON</label>
             <textarea id="response" placeholder='{ "localizations": { "es": { ... } } }'></textarea>
+        </div>
+
+        <div class="section">
+            <label class="checkbox-row" for="image-source-enabled">
+                <input type="checkbox" id="image-source-enabled">
+                <span>Replace images from local server</span>
+            </label>
+            <div id="image-source-fields" class="image-source-fields disabled">
+                <label class="label" for="image-source-url">Local Image Server URL</label>
+                <input type="text" id="image-source-url" placeholder="http://127.0.0.1:3000/image">
+                <label class="label" for="image-source-root-path">Screenshots Root Path (Optional)</label>
+                <input type="text" id="image-source-root-path"
+                    placeholder="/Users/x/Developer/WoziAppOne/fastlane/screenshots/Wozi">
+                <div class="hint">Start server: <code>npm run image-server -- --root "/Users/x/Developer/WoziAppOne/fastlane/screenshots/Wozi"</code></div>
+                <div class="hint">Request format: <code>?locale=&lt;locale&gt;&amp;nodeName=&lt;normalizedNodeName&gt;&amp;rootPath=&lt;optionalPath&gt;</code></div>
+            </div>
         </div>
 
         <div class="section">
@@ -472,6 +518,10 @@ Return **only valid JSON**.
         const languagesInput = document.getElementById('languages');
         const promptTextarea = document.getElementById('prompt');
         const responseTextarea = document.getElementById('response');
+        const imageSourceEnabledInput = document.getElementById('image-source-enabled');
+        const imageSourceUrlInput = document.getElementById('image-source-url');
+        const imageSourceRootPathInput = document.getElementById('image-source-root-path');
+        const imageSourceFields = document.getElementById('image-source-fields');
         const generateBtn = document.getElementById('generate');
         const applyBtn = document.getElementById('apply');
         const statusDiv = document.getElementById('status');
@@ -490,16 +540,7 @@ Return **only valid JSON**.
         applyBtn.disabled = true;
         applyBtn.style.opacity = "0.5";
         applyBtn.style.cursor = "not-allowed";
-        applyBtn.title = "Paste the AI response JSON to validation";
-
-        // Enable/Disable Apply button based on input
-        responseTextarea.addEventListener('input', () => {
-            const hasContent = responseTextarea.value.trim().length > 0;
-            applyBtn.disabled = !hasContent;
-            applyBtn.style.opacity = hasContent ? "1" : "0.5";
-            applyBtn.style.cursor = hasContent ? "pointer" : "not-allowed";
-            if (hasContent) hideStatus(); // Clear errors when typing
-        });
+        applyBtn.title = "Paste response JSON or enable image replacement";
 
         // Store extracted data for validation
         let extractedData = null;
@@ -508,6 +549,7 @@ Return **only valid JSON**.
         // Debounce timers for saving
         let saveLocalesTimeout = null;
         let savePromptTimeout = null;
+        let saveImageSourceTimeout = null;
 
         // Save locales with debounce (500ms delay)
         function saveLocales() {
@@ -535,11 +577,80 @@ Return **only valid JSON**.
             }, 500);
         }
 
+        function isImageSourceEnabled() {
+            return Boolean(imageSourceEnabledInput.checked);
+        }
+
+        function getImageSourceUrl() {
+            return imageSourceUrlInput.value.trim();
+        }
+
+        function getImageSourceRootPath() {
+            return imageSourceRootPathInput.value.trim();
+        }
+
+        function updateImageSourceFieldsState() {
+            const enabled = isImageSourceEnabled();
+            imageSourceFields.classList.toggle('disabled', !enabled);
+        }
+
+        function updateApplyButtonState() {
+            const hasResponse = responseTextarea.value.trim().length > 0;
+            const imageModeReady = isImageSourceEnabled() && getImageSourceUrl().length > 0;
+            const canApply = hasResponse || imageModeReady;
+
+            applyBtn.disabled = !canApply;
+            applyBtn.style.opacity = canApply ? "1" : "0.5";
+            applyBtn.style.cursor = canApply ? "pointer" : "not-allowed";
+
+            if (canApply) {
+                applyBtn.title = "Apply localization";
+            } else if (isImageSourceEnabled()) {
+                applyBtn.title = "Provide local image server URL or response JSON";
+            } else {
+                applyBtn.title = "Paste the AI response JSON or enable image replacement";
+            }
+        }
+
+        function saveImageSource() {
+            if (saveImageSourceTimeout) clearTimeout(saveImageSourceTimeout);
+            saveImageSourceTimeout = setTimeout(() => {
+                parent.postMessage({
+                    pluginMessage: {
+                        type: 'save-image-source',
+                        imageSource: {
+                            enabled: isImageSourceEnabled(),
+                            baseUrl: getImageSourceUrl(),
+                            rootPath: getImageSourceRootPath()
+                        }
+                    }
+                }, '*');
+            }, 500);
+        }
+
         // Listen for changes on locales input
         languagesInput.addEventListener('input', saveLocales);
 
         // Listen for changes on prompt textarea
         promptTextarea.addEventListener('input', savePrompt);
+
+        responseTextarea.addEventListener('input', () => {
+            updateApplyButtonState();
+            if (responseTextarea.value.trim().length > 0) hideStatus();
+        });
+
+        imageSourceEnabledInput.addEventListener('change', () => {
+            updateImageSourceFieldsState();
+            updateApplyButtonState();
+            saveImageSource();
+        });
+
+        imageSourceUrlInput.addEventListener('input', () => {
+            updateApplyButtonState();
+            saveImageSource();
+        });
+
+        imageSourceRootPathInput.addEventListener('input', saveImageSource);
 
         function showStatus(message, type) {
             if (statusTimeout) {
@@ -595,51 +706,80 @@ Return **only valid JSON**.
         // Apply Localization
         applyBtn.onclick = () => {
             const responseText = responseTextarea.value.trim();
-            if (!responseText) {
+            const imageSourceEnabled = isImageSourceEnabled();
+            const imageSourceUrl = getImageSourceUrl();
+            const imageSourceRootPath = getImageSourceRootPath();
+            const hasResponse = responseText.length > 0;
+
+            if (!hasResponse && !imageSourceEnabled) {
                 showStatus('Please paste the AI response first', 'error');
                 return;
             }
+
+            if (imageSourceEnabled && imageSourceUrl.length === 0) {
+                showApplyError('Image source URL is required when image replacement is enabled');
+                return;
+            }
+
             hideStatus();
 
             // Parse and validate JSON
-            let response;
-            try {
-                response = JSON.parse(responseText);
-            } catch (e) {
-                showApplyError('Invalid JSON format. Please check the response or generate a new one.');
-                return;
-            }
-
-            // Validate structure
-            if (!response.localizations || typeof response.localizations !== 'object') {
-                showApplyError('Missing "localizations" object in response');
-                return;
-            }
-
             const languages = getTargetLanguages();
-            const missingLanguages = languages.filter(lang => !response.localizations[lang]);
-            if (missingLanguages.length > 0) {
-                showApplyError(`Missing translations for: ${missingLanguages.join(', ')}`);
+            if (languages.length === 0) {
+                showApplyError('Please enter at least one target language');
                 return;
             }
 
-            // Validate against extracted data if available
-            if (extractedData && extractedData.texts) {
-                const textIds = extractedData.texts.map(t => t.id);
-                for (const lang of languages) {
-                    const langData = response.localizations[lang];
-                    const missingIds = textIds.filter(id => !langData.hasOwnProperty(id));
-                    if (missingIds.length > 0) {
-                        showStatus(`Missing text IDs for ${lang}: ${missingIds.length} texts`, 'error');
-                        return;
+            let localizations = {};
+            if (hasResponse) {
+                let response;
+                try {
+                    response = JSON.parse(responseText);
+                } catch (e) {
+                    showApplyError('Invalid JSON format. Please check the response or generate a new one.');
+                    return;
+                }
+
+                if (!response.localizations || typeof response.localizations !== 'object') {
+                    showApplyError('Missing "localizations" object in response');
+                    return;
+                }
+
+                localizations = response.localizations;
+
+                const missingLanguages = languages.filter(lang => !localizations[lang]);
+                if (missingLanguages.length > 0) {
+                    showApplyError(`Missing translations for: ${missingLanguages.join(', ')}`);
+                    return;
+                }
+
+                // Validate against extracted data if available
+                if (extractedData && extractedData.texts) {
+                    const textIds = extractedData.texts.map(t => t.id);
+                    for (const lang of languages) {
+                        const langData = localizations[lang];
+                        const missingIds = textIds.filter(id => !langData.hasOwnProperty(id));
+                        if (missingIds.length > 0) {
+                            showStatus(`Missing text IDs for ${lang}: ${missingIds.length} texts`, 'error');
+                            return;
+                        }
                     }
                 }
+            } else if (!imageSourceEnabled) {
+                showApplyError('Please paste AI response JSON or enable image replacement');
+                return;
             }
 
             parent.postMessage({
                 pluginMessage: {
                     type: 'apply-localization',
-                    localizations: response.localizations
+                    localizations: localizations,
+                    locales: languages,
+                    imageSource: {
+                        enabled: imageSourceEnabled,
+                        baseUrl: imageSourceUrl,
+                        rootPath: imageSourceRootPath
+                    }
                 }
             }, '*');
         };
@@ -662,11 +802,16 @@ Return **only valid JSON**.
                 }
             } else if (msg.type === 'prompt-generated') {
                 extractedData = msg.extractedData;
-                showStatus(`Prompt copied! Found ${msg.textCount} text nodes to localize.`, 'success');
+                const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
+                const imageCount = typeof msg.imageCount === 'number' ? msg.imageCount : 0;
+                showStatus(`Prompt copied! Found ${textCount} text nodes and ${imageCount} image nodes.`, 'success');
             } else if (msg.type === 'prompt-error') {
                 showStatus(msg.message, 'error');
             } else if (msg.type === 'apply-success') {
-                showStatus(`Success! Created ${msg.frameCount} localized frames.`, 'success');
+                const imageReplacedCount = typeof msg.imageReplacedCount === 'number' ? msg.imageReplacedCount : 0;
+                const imageSkippedCount = typeof msg.imageSkippedCount === 'number' ? msg.imageSkippedCount : 0;
+                const imageFailedCount = typeof msg.imageFailedCount === 'number' ? msg.imageFailedCount : 0;
+                showStatus(`Success! Created ${msg.frameCount} localized frames. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageFailedCount} failed.`, 'success');
             } else if (msg.type === 'apply-error') {
                 showStatus(msg.message, 'error');
             } else if (msg.type === 'selection-changed') {
@@ -701,8 +846,20 @@ Return **only valid JSON**.
                 if (msg.prompt !== null && msg.prompt !== undefined) {
                     promptTextarea.value = msg.prompt;
                 }
+                imageSourceEnabledInput.checked = Boolean(msg.imageSourceEnabled);
+                if (typeof msg.imageSourceUrl === 'string') {
+                    imageSourceUrlInput.value = msg.imageSourceUrl;
+                }
+                if (typeof msg.imageSourceRootPath === 'string') {
+                    imageSourceRootPathInput.value = msg.imageSourceRootPath;
+                }
+                updateImageSourceFieldsState();
+                updateApplyButtonState();
             }
         };
+
+        updateImageSourceFieldsState();
+        updateApplyButtonState();
 
         // Notify plugin that UI is ready
         parent.postMessage({ pluginMessage: { type: 'ui-ready' } }, '*');

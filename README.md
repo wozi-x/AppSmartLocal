@@ -52,6 +52,38 @@ Install SmartLocal directly from the [Figma Community](https://www.figma.com/com
 
 *Tip: If the AI adds extra text before/after the JSON, just copy strictly the `{ ... }` JSON part.*
 
+### Applying Localized Images (Optional)
+1.  Start the local image server:
+    ```bash
+    cd /Users/x/Developer/AppSmartLocal
+    npm run image-server -- --root "/Users/x/Developer/WoziAppOne/fastlane/screenshots/Wozi"
+    ```
+2.  In the plugin, enable **Replace images from local server**.
+3.  Set **Local Image Server URL** to:
+    - `http://127.0.0.1:3000/image`
+4.  (Optional) Set **Screenshots Root Path** in the plugin to override the server default path.
+5.  Click **Apply Localization**.
+
+Expected screenshots folder structure:
+```text
+<root>/
+  en-US/
+    iPhone 17-mystudy_cardstack_iPhone_17.png
+    ...
+  zh-Hans/
+    iPhone 17-mystudy_cardstack_iPhone_17.png
+    ...
+```
+
+Image request format used by plugin:
+- `?locale=<locale>&nodeName=<normalizedNodeName>&rootPath=<optionalPath>`
+- `normalizedNodeName` removes trailing duplicate suffix like ` ... 2`.
+
+Fallback behavior:
+- If locale folder does not exist, image is not replaced.
+- If image file is not found, image is not replaced.
+- Apply flow continues without failing the entire locale.
+
 ## ⚙️ Development
 
 ```bash
@@ -63,6 +95,9 @@ npm run build
 
 # Watch mode for development
 npm run watch
+
+# Local image server (optional)
+npm run image-server -- --root "/Users/x/Developer/WoziAppOne/fastlane/screenshots/Wozi"
 ```
 
 ## 🔒 Privacy & Security

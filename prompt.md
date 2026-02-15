@@ -109,9 +109,17 @@ Write like a native copywriter at a top local app—not a translator.
       "lines": number
     }
   ],
+  "images": [
+    {
+      "id": "string",        // Image node ID
+      "nodeName": "string",  // Image layer name
+      "fillIndex": number    // Index of IMAGE paint in node.fills
+    }
+  ],
   "targetLanguages": ["es", "fr", "ja", "zh", "ko"]
 }
 ```
+`images` is included only when visible image layers are found.
 
 ## OUTPUT FORMAT
 Return **only valid JSON**.

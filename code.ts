@@ -4,9 +4,12 @@
 // Storage keys for persisting user preferences
 const STORAGE_KEY_LOCALES = 'smartlocal_locales';
 const STORAGE_KEY_PROMPT = 'smartlocal_prompt';
+const STORAGE_KEY_IMAGE_SOURCE_ENABLED = 'smartlocal_image_source_enabled';
+const STORAGE_KEY_IMAGE_SOURCE_URL = 'smartlocal_image_source_url';
+const STORAGE_KEY_IMAGE_SOURCE_ROOT_PATH = 'smartlocal_image_source_root_path';
 
 // Show the UI
-figma.showUI(__html__, { width: 360, height: 480 }); // Reduced height to fit content better
+figma.showUI(__html__, { width: 360, height: 620 });
 
 // Check selection on startup (remove potential race condition, rely on ui-ready)
 // checkSelection();
@@ -64,16 +67,29 @@ interface TextInfo {
   height: number;
 }
 
+interface ImageInfo {
+  id: string;
+  nodeName: string;
+  fillIndex: number;
+}
+
 interface ExtractedData {
   sourceFrame: string;
   texts: TextInfo[];
   targetLanguages: string[];
+  images?: ImageInfo[];
 }
 
 interface Localizations {
   [locale: string]: {
     [nodeId: string]: string;
   };
+}
+
+interface ImageSourceSettings {
+  enabled: boolean;
+  baseUrl: string;
+  rootPath: string;
 }
 
 // Extract all text nodes from a frame recursively
@@ -120,6 +136,172 @@ function extractTextNodes(node: SceneNode, texts: TextInfo[]): void {
   }
 }
 
+// Extract all image nodes from a frame recursively
+function extractImageNodes(node: SceneNode, images: ImageInfo[]): void {
+  if (!node.visible) {
+    return;
+  }
+
+  if ('fills' in node && node.fills !== figma.mixed) {
+    const fills = node.fills as readonly Paint[];
+    fills.forEach((paint, index) => {
+      if (paint.type === 'IMAGE' && paint.visible !== false) {
+        images.push({
+          id: node.id,
+          nodeName: node.name,
+          fillIndex: index
+        });
+      }
+    });
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) {
+      extractImageNodes(child, images);
+    }
+  }
+}
+
+function isNodeWithFills(node: SceneNode): node is SceneNode & MinimalFillsMixin {
+  return 'fills' in node;
+}
+
+function buildSceneNodeMapping(original: SceneNode, cloned: SceneNode, mapping: Map<string, SceneNode>): void {
+  mapping.set(original.id, cloned);
+
+  if ('children' in original && 'children' in cloned) {
+    const origChildren = original.children;
+    const clonedChildren = cloned.children;
+
+    for (let i = 0; i < origChildren.length && i < clonedChildren.length; i++) {
+      buildSceneNodeMapping(origChildren[i], clonedChildren[i], mapping);
+    }
+  }
+}
+
+function normalizeImageNodeName(nodeName: string): string {
+  return nodeName.trim().replace(/\s+\d+$/, '').trim();
+}
+
+function isLikelyLocalizedScreenshotName(normalizedNodeName: string): boolean {
+  const value = normalizedNodeName.trim();
+  if (value.length < 8) {
+    return false;
+  }
+
+  // Real screenshot keys look like "iPhone 17-user_home_iPhone_17"
+  // Generic layers such as "main" / "image 3" / labels should be skipped.
+  return value.includes('_') && /[-–—]/.test(value);
+}
+
+function parseLocaleList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map(item => item.trim())
+    .filter(item => item.length > 0);
+}
+
+function normalizeImageSourceBaseUrl(value: string): string {
+  let normalized = value.trim();
+  if (normalized.length === 0) {
+    return '';
+  }
+
+  if (/^ttp:\/\//i.test(normalized) || /^ttps:\/\//i.test(normalized)) {
+    normalized = `h${normalized}`;
+  }
+
+  if (!/^https?:\/\//i.test(normalized)) {
+    normalized = `http://${normalized}`;
+  }
+
+  return normalized;
+}
+
+function isLikelyHttpUrl(value: string): boolean {
+  return /^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(value);
+}
+
+function parseImageSourceSettings(value: unknown): ImageSourceSettings {
+  if (!value || typeof value !== 'object') {
+    return { enabled: false, baseUrl: '', rootPath: '' };
+  }
+
+  const settings = value as Record<string, unknown>;
+  const rawBaseUrl = typeof settings.baseUrl === 'string' ? settings.baseUrl : '';
+  return {
+    enabled: Boolean(settings.enabled),
+    baseUrl: normalizeImageSourceBaseUrl(rawBaseUrl),
+    rootPath: typeof settings.rootPath === 'string' ? settings.rootPath.trim() : ''
+  };
+}
+
+async function fetchLocalizedImageHash(
+  imageBaseUrl: string,
+  locale: string,
+  normalizedNodeName: string,
+  rootPath: string,
+  cache: Map<string, string>
+): Promise<string | null> {
+  const queryParts = [
+    `locale=${encodeURIComponent(locale)}`,
+    `nodeName=${encodeURIComponent(normalizedNodeName)}`
+  ];
+  if (rootPath.length > 0) {
+    queryParts.push(`rootPath=${encodeURIComponent(rootPath)}`);
+  }
+  const separator = imageBaseUrl.includes('?') ? '&' : '?';
+  const requestUrl = `${imageBaseUrl}${separator}${queryParts.join('&')}`;
+
+  const cacheKey = requestUrl;
+  const cachedHash = cache.get(cacheKey);
+  if (cachedHash) {
+    console.log(`[image] cache-hit locale=${locale} nodeName="${normalizedNodeName}" url=${cacheKey}`);
+    return cachedHash;
+  }
+
+  let response;
+  try {
+    console.log(`[image] fetch-start locale=${locale} nodeName="${normalizedNodeName}" url=${cacheKey}`);
+    response = await fetch(cacheKey);
+  } catch (err) {
+    console.warn(`Image fetch failed for ${cacheKey}:`, err);
+    return null;
+  }
+
+  if (!response.ok) {
+    console.warn(`[image] fetch-non-ok locale=${locale} nodeName="${normalizedNodeName}" status=${response.status} url=${cacheKey}`);
+    return null;
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await response.arrayBuffer());
+  } catch (err) {
+    console.warn(`Failed to read image bytes for ${cacheKey}:`, err);
+    return null;
+  }
+
+  if (bytes.byteLength === 0) {
+    console.warn(`[image] empty-bytes locale=${locale} nodeName="${normalizedNodeName}" url=${cacheKey}`);
+    return null;
+  }
+
+  try {
+    const hash = figma.createImage(bytes).hash;
+    cache.set(cacheKey, hash);
+    console.log(`[image] fetch-success locale=${locale} nodeName="${normalizedNodeName}" bytes=${bytes.byteLength}`);
+    return hash;
+  } catch (err) {
+    console.warn(`Failed to create Figma image for ${cacheKey}:`, err);
+    return null;
+  }
+}
+
 // Build the mapping between original node IDs and cloned TextNode references
 function buildNodeMapping(original: SceneNode, cloned: SceneNode, mapping: Map<string, TextNode>): void {
   if (original.type === 'TEXT' && cloned.type === 'TEXT') {
@@ -145,11 +327,17 @@ figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
     try {
       const savedLocales = await figma.clientStorage.getAsync(STORAGE_KEY_LOCALES);
       const savedPrompt = await figma.clientStorage.getAsync(STORAGE_KEY_PROMPT);
+      const savedImageSourceEnabled = await figma.clientStorage.getAsync(STORAGE_KEY_IMAGE_SOURCE_ENABLED);
+      const savedImageSourceUrl = await figma.clientStorage.getAsync(STORAGE_KEY_IMAGE_SOURCE_URL);
+      const savedImageSourceRootPath = await figma.clientStorage.getAsync(STORAGE_KEY_IMAGE_SOURCE_ROOT_PATH);
 
       figma.ui.postMessage({
         type: 'load-saved-settings',
         locales: savedLocales || null,
-        prompt: savedPrompt || null
+        prompt: savedPrompt || null,
+        imageSourceEnabled: Boolean(savedImageSourceEnabled),
+        imageSourceUrl: typeof savedImageSourceUrl === 'string' ? savedImageSourceUrl : '',
+        imageSourceRootPath: typeof savedImageSourceRootPath === 'string' ? savedImageSourceRootPath : ''
       });
     } catch (err) {
       console.warn('Failed to load saved settings:', err);
@@ -190,16 +378,19 @@ figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
     // Extract text nodes
     const texts: TextInfo[] = [];
     extractTextNodes(selectedNode, texts);
+    const images: ImageInfo[] = [];
+    extractImageNodes(selectedNode, images);
 
     console.log(`Total text nodes found in "${selectedNode.name}":`, texts.length);
     if (texts.length > 0) {
       console.log('Sample extracted text:', texts.slice(0, 3).map(t => t.text));
     }
+    console.log(`Total image nodes found in "${selectedNode.name}":`, images.length);
 
-    if (texts.length === 0) {
+    if (texts.length === 0 && images.length === 0) {
       figma.ui.postMessage({
         type: 'prompt-error',
-        message: 'No text found in the selected frame'
+        message: 'No visible text or image nodes found in the selected frame'
       });
       return;
     }
@@ -213,6 +404,9 @@ figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
       texts: texts,
       targetLanguages: languages
     };
+    if (images.length > 0) {
+      extractedData.images = images;
+    }
 
     // Build the full prompt
     const fullPrompt = `${promptTemplate}
@@ -239,10 +433,11 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     figma.ui.postMessage({
       type: 'prompt-generated',
       textCount: texts.length,
+      imageCount: images.length,
       extractedData: extractedData
     });
 
-    figma.notify(`📋 Prompt copied! Found ${texts.length} text nodes.`);
+    figma.notify(`📋 Prompt copied! Found ${texts.length} text nodes and ${images.length} image nodes.`);
   }
 
   // Apply Localization
@@ -266,13 +461,42 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       return;
     }
 
-    const localizations = msg.localizations as Localizations;
-    const locales = Object.keys(localizations);
+    const localizations = (msg.localizations && typeof msg.localizations === 'object' && !Array.isArray(msg.localizations))
+      ? msg.localizations as Localizations
+      : {};
+    const requestedLocales = parseLocaleList(msg.locales);
+    const imageSource = parseImageSourceSettings(msg.imageSource);
+    const locales = requestedLocales.length > 0 ? requestedLocales : Object.keys(localizations);
+    const hasAnyTextTranslations = locales.some(locale => Object.keys(localizations[locale] || {}).length > 0);
 
     if (locales.length === 0) {
       figma.ui.postMessage({
         type: 'apply-error',
+        message: 'No target locales provided'
+      });
+      return;
+    }
+
+    if (!imageSource.enabled && !hasAnyTextTranslations) {
+      figma.ui.postMessage({
+        type: 'apply-error',
         message: 'No localizations found in the response'
+      });
+      return;
+    }
+
+    if (imageSource.enabled && imageSource.baseUrl.length === 0) {
+      figma.ui.postMessage({
+        type: 'apply-error',
+        message: 'Image source URL is required when image replacement is enabled'
+      });
+      return;
+    }
+
+    if (imageSource.enabled && !isLikelyHttpUrl(imageSource.baseUrl)) {
+      figma.ui.postMessage({
+        type: 'apply-error',
+        message: 'Image source URL is invalid. Use format like http://localhost:3000/image'
       });
       return;
     }
@@ -283,13 +507,40 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     const spacing = 40; // Gap between frames
 
     let createdCount = 0;
+    let imageReplacedCount = 0;
+    let imageSkippedCount = 0;
+    let imageFailedCount = 0;
+    const imageHashCache = new Map<string, string>();
+    const sourceImages: ImageInfo[] = [];
+    if (imageSource.enabled) {
+      extractImageNodes(originalFrame, sourceImages);
+      console.log('[image] apply-config', {
+        baseUrl: imageSource.baseUrl,
+        rootPath: imageSource.rootPath,
+        sourceImageCount: sourceImages.length
+      });
+      console.log('[image] source-image-sample', sourceImages.slice(0, 8).map(img => ({
+        id: img.id,
+        nodeName: img.nodeName,
+        normalizedNodeName: normalizeImageNodeName(img.nodeName),
+        fillIndex: img.fillIndex
+      })));
+    }
+
+    if (imageSource.enabled && sourceImages.length === 0 && !hasAnyTextTranslations) {
+      figma.ui.postMessage({
+        type: 'apply-error',
+        message: 'No visible image nodes found to replace'
+      });
+      return;
+    }
 
     console.log('Locales received:', locales);
     console.log('Total locales to process:', locales.length);
 
     for (let i = 0; i < locales.length; i++) {
       const locale = locales[i];
-      const translations = localizations[locale];
+      const translations = localizations[locale] || {};
 
       console.log(`Processing locale ${i + 1}/${locales.length}: ${locale}`);
 
@@ -306,6 +557,8 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
         // Build mapping between original IDs and cloned TextNode references
         const nodeMapping = new Map<string, TextNode>();
         buildNodeMapping(originalFrame, clonedFrame, nodeMapping);
+        const sceneNodeMapping = new Map<string, SceneNode>();
+        buildSceneNodeMapping(originalFrame, clonedFrame, sceneNodeMapping);
 
         // STEP 1: Load all fonts for all text nodes BEFORE any modifications
         for (const [originalId] of Object.entries(translations)) {
@@ -391,6 +644,86 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
           }
         }
 
+        if (imageSource.enabled && sourceImages.length > 0) {
+          console.log(`[image] locale-start locale=${locale} images=${sourceImages.length}`);
+          let localeReplacedCount = 0;
+          let localeSkippedCount = 0;
+          let localeFailedCount = 0;
+
+          for (const imageInfo of sourceImages) {
+            const targetNode = sceneNodeMapping.get(imageInfo.id);
+            if (!targetNode || !isNodeWithFills(targetNode) || targetNode.fills === figma.mixed) {
+              console.log(`[image] skip locale=${locale} reason=node-missing-or-no-fills id=${imageInfo.id} nodeName="${imageInfo.nodeName}"`);
+              imageSkippedCount++;
+              localeSkippedCount++;
+              continue;
+            }
+
+            const fills = [...targetNode.fills] as Paint[];
+            if (imageInfo.fillIndex < 0 || imageInfo.fillIndex >= fills.length) {
+              console.log(`[image] skip locale=${locale} reason=fill-index-out-of-range id=${imageInfo.id} fillIndex=${imageInfo.fillIndex} fills=${fills.length}`);
+              imageSkippedCount++;
+              localeSkippedCount++;
+              continue;
+            }
+
+            const targetPaint = fills[imageInfo.fillIndex];
+            if (targetPaint.type !== 'IMAGE') {
+              console.log(`[image] skip locale=${locale} reason=target-paint-not-image id=${imageInfo.id} fillIndex=${imageInfo.fillIndex} type=${targetPaint.type}`);
+              imageSkippedCount++;
+              localeSkippedCount++;
+              continue;
+            }
+
+            const normalizedNodeName = normalizeImageNodeName(imageInfo.nodeName);
+            if (normalizedNodeName.length === 0) {
+              console.log(`[image] skip locale=${locale} reason=empty-normalized-name id=${imageInfo.id} nodeName="${imageInfo.nodeName}"`);
+              imageSkippedCount++;
+              localeSkippedCount++;
+              continue;
+            }
+
+            if (!isLikelyLocalizedScreenshotName(normalizedNodeName)) {
+              console.log(`[image] skip locale=${locale} reason=non-screenshot-node id=${imageInfo.id} normalized="${normalizedNodeName}"`);
+              imageSkippedCount++;
+              localeSkippedCount++;
+              continue;
+            }
+
+            console.log(`[image] replace-attempt locale=${locale} id=${imageInfo.id} nodeName="${imageInfo.nodeName}" normalized="${normalizedNodeName}" fillIndex=${imageInfo.fillIndex}`);
+            const imageHash = await fetchLocalizedImageHash(
+              imageSource.baseUrl,
+              locale,
+              normalizedNodeName,
+              imageSource.rootPath,
+              imageHashCache
+            );
+
+            if (!imageHash) {
+              console.log(`[image] skip locale=${locale} reason=hash-not-found normalized="${normalizedNodeName}"`);
+              imageSkippedCount++;
+              localeSkippedCount++;
+              continue;
+            }
+
+            try {
+              fills[imageInfo.fillIndex] = {
+                ...targetPaint,
+                imageHash
+              };
+              targetNode.fills = fills;
+              imageReplacedCount++;
+              localeReplacedCount++;
+              console.log(`[image] replace-success locale=${locale} id=${imageInfo.id} normalized="${normalizedNodeName}"`);
+            } catch (imageErr) {
+              console.warn(`Image replacement failed for ${locale}/${normalizedNodeName}:`, imageErr);
+              imageFailedCount++;
+              localeFailedCount++;
+            }
+          }
+          console.log(`[image] locale-summary locale=${locale} replaced=${localeReplacedCount} skipped=${localeSkippedCount} failed=${localeFailedCount}`);
+        }
+
         createdCount++;
         console.log(`Completed locale ${locale}, created count: ${createdCount}`);
       } catch (localeErr) {
@@ -401,10 +734,13 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
 
     figma.ui.postMessage({
       type: 'apply-success',
-      frameCount: createdCount
+      frameCount: createdCount,
+      imageReplacedCount: imageReplacedCount,
+      imageSkippedCount: imageSkippedCount,
+      imageFailedCount: imageFailedCount
     });
 
-    figma.notify(`✨ Created ${createdCount} localized frames!`);
+    figma.notify(`✨ Created ${createdCount} localized frames. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageFailedCount} failed.`);
   }
 
   // Handle clipboard copy request from UI
@@ -427,6 +763,18 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       await figma.clientStorage.setAsync(STORAGE_KEY_PROMPT, msg.prompt as string);
     } catch (err) {
       console.warn('Failed to save prompt:', err);
+    }
+  }
+
+  // Save image source settings to clientStorage
+  if (msg.type === 'save-image-source') {
+    const imageSource = parseImageSourceSettings(msg.imageSource);
+    try {
+      await figma.clientStorage.setAsync(STORAGE_KEY_IMAGE_SOURCE_ENABLED, imageSource.enabled);
+      await figma.clientStorage.setAsync(STORAGE_KEY_IMAGE_SOURCE_URL, imageSource.baseUrl);
+      await figma.clientStorage.setAsync(STORAGE_KEY_IMAGE_SOURCE_ROOT_PATH, imageSource.rootPath);
+    } catch (err) {
+      console.warn('Failed to save image source settings:', err);
     }
   }
 };

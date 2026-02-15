@@ -5,6 +5,7 @@
   "main": "code.js",
   "scripts": {
     "build": "node scripts/build_ui.js && tsc",
+    "image-server": "node scripts/local_image_server.js",
     "lint": "eslint --ext .ts,.tsx --ignore-pattern node_modules .",
     "lint:fix": "eslint --ext .ts,.tsx --ignore-pattern node_modules --fix .",
     "watch": "npm run build -- --watch"
