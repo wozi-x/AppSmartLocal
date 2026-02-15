@@ -568,6 +568,14 @@ Return **only valid JSON**.
                     <span class="icon-text">📄</span> Copy Generated Prompt
                 </button>
             </div>
+
+            <div class="section-tight">
+                <label class="label" for="extract-all-frames-content">Utilities</label>
+                <button id="extract-all-frames-content" class="btn btn-secondary" type="button">
+                    <span class="icon-text">🗂️</span> Extract All Frames Content
+                </button>
+                <div class="hint">Creates archive JSON for all top-level frames on this page and copies it to clipboard.</div>
+            </div>
         </div>
 
         <div class="flow-card">
@@ -647,6 +655,7 @@ Return **only valid JSON**.
         const generateBtn = document.getElementById('generate');
         const generatedPromptTextarea = document.getElementById('generated-prompt');
         const copyGeneratedPromptBtn = document.getElementById('copy-generated-prompt');
+        const extractAllFramesContentBtn = document.getElementById('extract-all-frames-content');
         const applyBtn = document.getElementById('apply');
         const statusDiv = document.getElementById('status');
         const selectionIndicator = document.getElementById('selection-indicator');
@@ -673,7 +682,7 @@ Return **only valid JSON**.
         let imageCatalogSummary = 'No folder selected.';
         let lastImageIssues = [];
         let lastGeneratedPrompt = '';
-        let lastGenerateCopySucceeded = false;
+        let lastClipboardCopySucceeded = false;
         const IMAGE_DEBUG_ENABLED = true;
 
         function imageDebug(message, payload) {
@@ -701,6 +710,113 @@ Return **only valid JSON**.
                 .split(',')
                 .map(value => value.trim())
                 .filter(value => value.length > 0);
+        }
+
+        function isObjectRecord(value) {
+            return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+        }
+
+        function sanitizeTranslations(value) {
+            if (!isObjectRecord(value)) {
+                return null;
+            }
+
+            const translations = {};
+            for (const [nodeId, text] of Object.entries(value)) {
+                if (typeof text === 'string') {
+                    translations[nodeId] = text;
+                }
+            }
+
+            return translations;
+        }
+
+        function sanitizeLocalizations(value, requireLocaleLikeKeys = false) {
+            if (!isObjectRecord(value)) {
+                return null;
+            }
+
+            const localizations = {};
+            for (const [locale, translations] of Object.entries(value)) {
+                if (requireLocaleLikeKeys && !isLocaleLikeSegment(locale)) {
+                    continue;
+                }
+
+                const sanitizedTranslations = sanitizeTranslations(translations);
+                if (!sanitizedTranslations) {
+                    continue;
+                }
+
+                localizations[locale] = sanitizedTranslations;
+            }
+
+            return Object.keys(localizations).length > 0 ? localizations : null;
+        }
+
+        function mergeLocalizations(target, source) {
+            for (const [locale, translations] of Object.entries(source)) {
+                if (!Object.prototype.hasOwnProperty.call(target, locale)) {
+                    target[locale] = {};
+                }
+
+                for (const [nodeId, text] of Object.entries(translations)) {
+                    target[locale][nodeId] = text;
+                }
+            }
+        }
+
+        function extractLocalizationsFromResponse(response) {
+            if (!isObjectRecord(response)) {
+                return null;
+            }
+
+            const direct = sanitizeLocalizations(response.localizations);
+            if (direct) {
+                return direct;
+            }
+
+            const nestedContainers = ['output', 'result', 'data', 'combinedOutput'];
+            for (const key of nestedContainers) {
+                const container = response[key];
+                if (!isObjectRecord(container)) {
+                    continue;
+                }
+
+                const nestedLocalizations = sanitizeLocalizations(container.localizations);
+                if (nestedLocalizations) {
+                    return nestedLocalizations;
+                }
+            }
+
+            if (Array.isArray(response.frames)) {
+                const merged = {};
+
+                for (const frame of response.frames) {
+                    if (!isObjectRecord(frame)) {
+                        continue;
+                    }
+
+                    const candidates = [
+                        frame.localizations,
+                        isObjectRecord(frame.output) ? frame.output.localizations : null,
+                        isObjectRecord(frame.result) ? frame.result.localizations : null,
+                        isObjectRecord(frame.data) ? frame.data.localizations : null
+                    ];
+
+                    for (const candidate of candidates) {
+                        const frameLocalizations = sanitizeLocalizations(candidate);
+                        if (frameLocalizations) {
+                            mergeLocalizations(merged, frameLocalizations);
+                        }
+                    }
+                }
+
+                if (Object.keys(merged).length > 0) {
+                    return merged;
+                }
+            }
+
+            return sanitizeLocalizations(response, true);
         }
 
         function saveLocales() {
@@ -1044,6 +1160,17 @@ Return **only valid JSON**.
             }
         });
 
+        extractAllFramesContentBtn.addEventListener('click', () => {
+            hideStatus();
+            const languages = getTargetLanguages();
+            parent.postMessage({
+                pluginMessage: {
+                    type: 'extract-all-frames-content',
+                    languages
+                }
+            }, '*');
+        });
+
         generateBtn.onclick = () => {
             const languages = getTargetLanguages();
             if (languages.length === 0) {
@@ -1095,28 +1222,15 @@ Return **only valid JSON**.
                 }
 
                 if (!response.localizations || typeof response.localizations !== 'object') {
-                    showApplyError('Missing "localizations" object in response');
-                    return;
-                }
-
-                localizations = response.localizations;
-
-                const missingLanguages = languages.filter(lang => !localizations[lang]);
-                if (missingLanguages.length > 0) {
-                    showApplyError(`Missing translations for: ${missingLanguages.join(', ')}`);
-                    return;
-                }
-
-                if (extractedData && extractedData.texts) {
-                    const textIds = extractedData.texts.map(item => item.id);
-                    for (const lang of languages) {
-                        const langData = localizations[lang];
-                        const missingIds = textIds.filter(id => !Object.prototype.hasOwnProperty.call(langData, id));
-                        if (missingIds.length > 0) {
-                            showApplyError(`Missing text IDs for ${lang}: ${missingIds.length} items`);
-                            return;
-                        }
+                    const extractedLocalizations = extractLocalizationsFromResponse(response);
+                    if (extractedLocalizations) {
+                        localizations = extractedLocalizations;
+                    } else if (!imageSourceEnabled) {
+                        showApplyError('Could not find localizations. Use {"localizations": {...}} or a locale map like {"de-DE": {...}}.');
+                        return;
                     }
+                } else {
+                    localizations = response.localizations;
                 }
             }
 
@@ -1193,18 +1307,35 @@ Return **only valid JSON**.
             if (msg.type === 'copy-to-clipboard') {
                 lastGeneratedPrompt = typeof msg.text === 'string' ? msg.text : '';
                 generatedPromptTextarea.value = lastGeneratedPrompt;
-                lastGenerateCopySucceeded = await copyText(lastGeneratedPrompt);
+                lastClipboardCopySucceeded = await copyText(lastGeneratedPrompt);
                 return;
             }
 
             if (msg.type === 'prompt-generated') {
                 extractedData = msg.extractedData;
                 const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
-                if (lastGenerateCopySucceeded) {
+                if (lastClipboardCopySucceeded) {
                     showStatus(`Prompt copied! Found ${textCount} text nodes.`, 'success');
                 } else {
                     showStatus(`Prompt generated (clipboard blocked). Found ${textCount} text nodes. Copy from Generated Prompt box.`, 'info');
                 }
+                return;
+            }
+
+            if (msg.type === 'all-frames-content-extracted') {
+                extractedData = msg.archiveData || null;
+                const frameCount = typeof msg.frameCount === 'number' ? msg.frameCount : 0;
+                const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
+                if (lastClipboardCopySucceeded) {
+                    showStatus(`Archive copied! ${frameCount} frames, ${textCount} text nodes. Translate it, then apply JSON with localizations.`, 'success');
+                } else {
+                    showStatus(`Archive generated for ${frameCount} frames (clipboard blocked). Copy from Generated Prompt box.`, 'info');
+                }
+                return;
+            }
+
+            if (msg.type === 'all-frames-content-error') {
+                showStatus(msg.message, 'error');
                 return;
             }
 
@@ -1214,6 +1345,10 @@ Return **only valid JSON**.
             }
 
             if (msg.type === 'apply-success') {
+                const createdCount = typeof msg.createdCount === 'number'
+                    ? msg.createdCount
+                    : (typeof msg.frameCount === 'number' ? msg.frameCount : 0);
+                const updatedCount = typeof msg.updatedCount === 'number' ? msg.updatedCount : 0;
                 const imageReplacedCount = typeof msg.imageReplacedCount === 'number' ? msg.imageReplacedCount : 0;
                 const imageSkippedCount = typeof msg.imageSkippedCount === 'number' ? msg.imageSkippedCount : 0;
                 const imageAmbiguousCount = typeof msg.imageAmbiguousCount === 'number' ? msg.imageAmbiguousCount : 0;
@@ -1221,7 +1356,8 @@ Return **only valid JSON**.
                 lastImageIssues = Array.isArray(msg.imageIssues) ? msg.imageIssues : [];
                 updateImageReportState();
                 imageDebug('apply-success', {
-                    frameCount: msg.frameCount,
+                    createdCount,
+                    updatedCount,
                     imageReplacedCount,
                     imageSkippedCount,
                     imageAmbiguousCount,
@@ -1230,7 +1366,7 @@ Return **only valid JSON**.
                 });
 
                 showStatus(
-                    `Success! Created ${msg.frameCount} localized frames. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageAmbiguousCount} ambiguous, ${imageFailedCount} failed.`,
+                    `Success! ${createdCount} created, ${updatedCount} updated. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageAmbiguousCount} ambiguous, ${imageFailedCount} failed.`,
                     'success'
                 );
                 return;

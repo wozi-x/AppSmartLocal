@@ -1,100 +1,128 @@
 # SmartLocal
 
-**Effortless Figma Localization with Your Preferred AI.**
+**Effortless Figma localization with your preferred AI.**
 
-SmartLocal bridges the gap between Figma designs and AI translation. Instead of relying on rigid, built-in translation services, SmartLocal generates context-aware prompts that you can use with **any** AI tool (ChatGPT, Claude, DeepL, etc.) to get high-quality, culturally relevant translations.
+SmartLocal bridges Figma design context and AI translation quality. It generates structured prompts from your selected design and applies returned JSON back into localized variants while preserving visual style.
 
-[**👉 Try it on Figma Community**](https://www.figma.com/community/plugin/1589498837344174364/smartlocal)
+[**Try it on Figma Community**](https://www.figma.com/community/plugin/1589498837344174364/smartlocal)
 
-## ✨ Features
+## Features
 
--   **🤖 AI-Agnostic**: Use any LLM (ChatGPT, Claude, etc.) with generated prompts.
--   **🎨 Perfect Style Preservation**: Maintains fonts, colors, and auto-layout.
--   **🚀 Batch Localization**: Generate multiple languages in one pass.
--   **📏 Non-Destructive**: Clones and positions localized frames below originals.
--   **🧠 Context-Aware**: Extracts text hierarchy for better translations.
+- **AI-agnostic workflow**: Use ChatGPT, Claude, DeepL, or any LLM that can return JSON.
+- **Width-aware prompt generation**: Exports `charCount`, `lines`, `boxWidthPx`, and `containerWidthPx` for better UI fit.
+- **Text-style preservation**: Keeps dominant text styling (font, size, fills, spacing, case, decoration) when replacing content.
+- **Create + update modes**: Creates new localized variants and updates existing `<originalName>_<locale>` variants in place.
+- **Flexible JSON parsing**: Accepts multiple response shapes, including nested outputs and merged frame-level localizations.
+- **Optional localized image replacement**: Replaces image fills from a local folder catalog using fuzzy matching.
+- **Bulk archive utility**: Exports all top-level frame text content on the page as one archive JSON payload.
+- **Local-first**: Runs in Figma, with local storage for UI settings and no external SmartLocal backend.
 
-## 🛠️ How It Works
+## How It Works
 
-1.  **Select**: Click on any Frame, Component, or Instance in Figma.
-2.  **Generate**: Open SmartLocal, enter your target languages (e.g., `es, fr`), and click **Generate Prompt**.
-3.  **Translate**: Paste the generated prompt into your AI tool (ChatGPT, Claude, etc.).
-4.  **Apply**: Copy the JSON response from the AI and paste it back into SmartLocal.
-5.  **Done**: Watch as SmartLocal creates perfectly styled duplicates for each language!
+1. Select a **Frame**, **Component**, or **Instance**.
+2. Enter target locales (for example: `es, fr, ja`).
+3. Use one of these extraction paths:
+   - **Generate & Copy Prompt** for the selected node.
+   - **Extract All Frames Content** to archive all top-level frames on the current page.
+4. Paste the generated JSON input into your AI tool and get localization JSON back.
+5. Paste AI JSON into SmartLocal and click **Apply Localization**.
+6. SmartLocal creates or updates localized variants and optionally swaps locale-specific images.
 
-## 📦 Installation
+## Installation
 
-### 🚀 From Figma Community (Recommended)
+### From Figma Community (Recommended)
 
-Install SmartLocal directly from the [Figma Community](https://www.figma.com/community/plugin/1589498837344174364/smartlocal).
+Install SmartLocal directly from [Figma Community](https://www.figma.com/community/plugin/1589498837344174364/smartlocal).
 
-### 🛠️ For Developers (Manual)
+### For Developers (Manual)
 
-1.  Download this repository.
-2.  Open Figma Desktop App.
-3.  Go to **Menu > Plugins > Development > Import plugin from manifest...**.
-4.  Select `manifest.json` from the `AppSmartLocal` folder.
+1. Download this repository.
+2. Open the Figma desktop app.
+3. Go to **Menu > Plugins > Development > Import plugin from manifest...**
+4. Select `manifest.json` from this project folder.
 
-## 💻 Usage
+## Usage
 
-### Generating Translations
-1.  Select a frame with text.
-2.  Run **SmartLocal**.
-3.  In the "Target Languages" input, type codes like `es` (Spanish), `fr` (French), `jp` (Japanese).
-4.  Hit **Generate & Copy Prompt**.
-5.  Go to ChatGPT/Claude and paste.
+### 1) Generate Prompt (Selected Node)
 
-### Applying Translations
-1.  Copy the JSON code block returned by the AI.
-2.  Paste it into the plugin's text area.
-3.  Ensure the **original frame** is still selected.
-4.  Click **Apply Localization**.
+1. Select one frame/component/instance containing text.
+2. Click **Generate & Copy Prompt**.
+3. Paste into your AI tool.
 
-*Tip: If the AI adds extra text before/after the JSON, just copy strictly the `{ ... }` JSON part.*
+The generated input includes text IDs plus sizing metadata so translations can better match layout constraints.
 
-### Applying Localized Images (Optional)
-1.  In the plugin, enable **Enable localized image replacement**.
-2.  Click **Choose Assets Folder** and select a local folder containing locale subfolders.
-3.  Click **Apply Localization**.
+### 2) Extract All Frames Content (Page Utility)
 
-Expected screenshots folder structure:
+Use **Extract All Frames Content** to copy archive JSON for every top-level frame on the current page. The archive includes:
+
+- Per-frame text input payloads
+- A combined page-level input payload
+- Frame path metadata and counts
+
+This is useful for page-wide localization pipelines.
+
+### 3) Apply Localization JSON
+
+Paste AI JSON and click **Apply Localization**.
+
+Supported response patterns include:
+
+- `{ "localizations": { ... } }`
+- Locale map at root (for example `{ "de-DE": { ... } }`)
+- Nested containers like `output.localizations`, `result.localizations`, `data.localizations`, or `combinedOutput.localizations`
+- Frame arrays where each item contains localizations (`frames[].localizations`, etc.), which are merged
+
+Important behavior:
+
+- For **new locales**, full text coverage is required (missing IDs are rejected).
+- For **existing localized variants**, partial updates are allowed.
+- Existing localized siblings named like `<original>_<locale>` are updated instead of duplicated.
+- Success status reports both `created` and `updated` counts.
+
+### 4) Optional Image Replacement
+
+1. Enable **Enable localized image replacement**.
+2. Click **Choose Assets Folder**.
+3. Provide locale-based folders like:
+
 ```text
 <root>/
   en-US/
-    iPhone 17-mystudy_cardstack_iPhone_17.png
-    ...
+    home_hero.png
   zh-Hans/
-    iPhone 17-mystudy_cardstack_iPhone_17.png
-    ...
+    home_hero.png
 ```
 
-Matching behavior:
-- SmartLocal auto-matches node names to filenames using fuzzy scoring.
-- Exact or near matches are applied automatically.
-- If no confident match exists, SmartLocal skips and reports the mismatch.
-- If multiple candidates are too close, SmartLocal marks as ambiguous and skips.
+SmartLocal image replacement rules:
 
-Supported image formats and limits:
-- Extensions: `.png`, `.jpg`, `.jpeg`, `.webp`
+- Supported extensions: `.png`, `.jpg`, `.jpeg`, `.webp`
 - Max size: `20MB` per file
 - Catalog limit: `5000` files
-- Apply flow continues even when some image matches are skipped/failed.
+- Fuzzy filename matching with confidence/ambiguity checks
+- Mismatches can be exported via **Copy Image Mismatch Report**
 
-## ⚙️ Development
+## Recent Changes
+
+- Prompt generation is now **width-aware** and focused on text-localization payloads.
+- Localization apply flow now distinguishes **created vs updated** locale variants.
+- Added **Extract All Frames Content** utility for page-level archive export.
+- Apply parser now handles more AI response structures and merges frame-level outputs.
+- New-locale guardrails enforce full JSON coverage before first-time creation.
+- Improved style consistency by applying dominant source text styling after replacement.
+- Image localization flow improved with stricter limits, fuzzy matching, and clearer mismatch reporting.
+
+## Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Build the plugin
 npm run build
-
-# Watch mode for development
 npm run watch
 ```
 
-## 🔒 Privacy & Security
-SmartLocal runs entirely locally in your Figma instance. It does not send your design data to any third-party server. Text is only exported to your clipboard when you explicitly click "Generate".
+## Privacy & Security
 
-## 📄 License
+SmartLocal runs locally in your Figma session. It does not require a SmartLocal server for translation. Prompt/response data is handled in-plugin and copied to clipboard only when you trigger copy actions.
+
+## License
+
 AGPL-3.0

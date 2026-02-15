@@ -84,11 +84,34 @@ interface ExtractedData {
   targetLanguages: string[];
 }
 
+interface ArchivedFrameContent {
+  frameId: string;
+  frameName: string;
+  framePath: string;
+  textCount: number;
+  input: ExtractedData;
+}
+
+interface ArchiveExportData {
+  generatedAt: string;
+  page: {
+    id: string;
+    name: string;
+  };
+  targetLanguages: string[];
+  frameCount: number;
+  totalTextCount: number;
+  combinedInput: ExtractedData;
+  frames: ArchivedFrameContent[];
+}
+
 interface Localizations {
   [locale: string]: {
     [nodeId: string]: string;
   };
 }
+
+type LocalizableContainerNode = FrameNode | ComponentNode | InstanceNode;
 
 type ImageSourceMode = 'folder';
 type ImageCatalogExtension = 'png' | 'jpg' | 'jpeg' | 'webp';
@@ -288,6 +311,134 @@ function buildNodeMapping(original: SceneNode, cloned: SceneNode, mapping: Map<s
       buildNodeMapping(origChildren[i], clonedChildren[i], mapping);
     }
   }
+}
+
+function isLocalizableContainerNode(node: SceneNode): node is LocalizableContainerNode {
+  return node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE';
+}
+
+function getFramePath(frame: FrameNode): string {
+  const segments: string[] = [];
+  let current: BaseNode | null = frame;
+
+  while (current && current.type !== 'PAGE') {
+    if ('name' in current && typeof current.name === 'string') {
+      segments.push(current.name);
+    }
+    current = current.parent;
+  }
+
+  return segments.reverse().join(' / ');
+}
+
+function hasFrameAncestor(frame: FrameNode): boolean {
+  let parent: BaseNode | null = frame.parent;
+
+  while (parent && parent.type !== 'PAGE') {
+    if (parent.type === 'FRAME') {
+      return true;
+    }
+    parent = parent.parent;
+  }
+
+  return false;
+}
+
+function getArchiveFrames(page: PageNode): FrameNode[] {
+  const allFrames = page.findAll(node => node.type === 'FRAME')
+    .filter((node): node is FrameNode => node.type === 'FRAME');
+  const rootFrames = allFrames.filter(frame => !hasFrameAncestor(frame));
+
+  rootFrames.sort((a, b) => {
+    if (a.y !== b.y) {
+      return a.y - b.y;
+    }
+    return a.x - b.x;
+  });
+
+  return rootFrames;
+}
+
+function findExistingLocalizedNode(originalNode: LocalizableContainerNode, locale: string): LocalizableContainerNode | null {
+  const parent = originalNode.parent;
+  if (!parent || !('children' in parent)) {
+    return null;
+  }
+
+  const expectedName = `${originalNode.name}_${locale}`;
+  const siblings = parent.children.filter(
+    (child): child is LocalizableContainerNode => child.id !== originalNode.id && isLocalizableContainerNode(child)
+  );
+
+  const exact = siblings.find(child => child.name === expectedName);
+  if (exact) {
+    return exact;
+  }
+
+  const numberedPrefix = `${expectedName} `;
+  const numbered = siblings.find(child => child.name.startsWith(numberedPrefix));
+  return numbered || null;
+}
+
+function getNextLocalizedVariantY(originalNode: LocalizableContainerNode, spacing: number): number {
+  const parent = originalNode.parent;
+  if (!parent || !('children' in parent)) {
+    return originalNode.y + originalNode.height + spacing;
+  }
+
+  const localePrefix = `${originalNode.name}_`;
+  let maxBottom = originalNode.y + originalNode.height;
+
+  for (const child of parent.children) {
+    if (child.id === originalNode.id) {
+      continue;
+    }
+
+    if (!isLocalizableContainerNode(child)) {
+      continue;
+    }
+
+    if (!child.name.startsWith(localePrefix)) {
+      continue;
+    }
+
+    const childBottom = child.y + child.height;
+    if (childBottom > maxBottom) {
+      maxBottom = childBottom;
+    }
+  }
+
+  return maxBottom + spacing;
+}
+
+function getLocaleTranslations(localizations: Localizations, locale: string): Record<string, string> {
+  const rawTranslations = localizations[locale];
+  if (!rawTranslations || typeof rawTranslations !== 'object') {
+    return {};
+  }
+
+  const sanitized: Record<string, string> = {};
+  for (const [nodeId, translatedText] of Object.entries(rawTranslations)) {
+    if (typeof translatedText === 'string') {
+      sanitized[nodeId] = translatedText;
+    }
+  }
+
+  return sanitized;
+}
+
+function dedupeLocales(locales: string[]): string[] {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+
+  for (const locale of locales) {
+    if (!seen.has(locale)) {
+      seen.add(locale);
+      unique.push(locale);
+    }
+  }
+
+  return unique;
 }
 
 function parseLocaleList(value: unknown): string[] {
@@ -896,6 +1047,71 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     return;
   }
 
+  if (msg.type === 'extract-all-frames-content') {
+    const archiveFrames = getArchiveFrames(figma.currentPage);
+
+    if (archiveFrames.length === 0) {
+      figma.ui.postMessage({
+        type: 'all-frames-content-error',
+        message: 'No frames found on this page.'
+      });
+      return;
+    }
+
+    const targetLanguages = parseLocaleList(msg.languages);
+    let totalTextCount = 0;
+    const combinedTexts: TextInfo[] = [];
+    const frames: ArchivedFrameContent[] = archiveFrames.map(frame => {
+      const texts: TextInfo[] = [];
+      extractTextNodes(frame, texts);
+
+      totalTextCount += texts.length;
+      combinedTexts.push(...texts);
+
+      return {
+        frameId: frame.id,
+        frameName: frame.name,
+        framePath: getFramePath(frame),
+        textCount: texts.length,
+        input: {
+          texts,
+          targetLanguages
+        }
+      };
+    });
+
+    const archiveData: ArchiveExportData = {
+      generatedAt: new Date().toISOString(),
+      page: {
+        id: figma.currentPage.id,
+        name: figma.currentPage.name
+      },
+      targetLanguages,
+      frameCount: frames.length,
+      totalTextCount,
+      combinedInput: {
+        texts: combinedTexts,
+        targetLanguages
+      },
+      frames
+    };
+
+    figma.ui.postMessage({
+      type: 'copy-to-clipboard',
+      text: JSON.stringify(archiveData, null, 2)
+    });
+
+    figma.ui.postMessage({
+      type: 'all-frames-content-extracted',
+      frameCount: archiveData.frameCount,
+      textCount: archiveData.totalTextCount,
+      archiveData
+    });
+
+    figma.notify(`🗂️ Archived ${archiveData.frameCount} frames (${archiveData.totalTextCount} text nodes).`);
+    return;
+  }
+
   // Apply Localization
   if (msg.type === 'apply-localization') {
     const selection = figma.currentPage.selection;
@@ -917,31 +1133,18 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       return;
     }
 
+    const originalFrame = selectedNode as LocalizableContainerNode;
     const localizations = (msg.localizations && typeof msg.localizations === 'object' && !Array.isArray(msg.localizations))
       ? msg.localizations as Localizations
       : {};
     const requestedLocales = parseLocaleList(msg.locales);
     const imageSource = parseImageSourceSettings(msg.imageSource);
-    const locales = requestedLocales.length > 0 ? requestedLocales : Object.keys(localizations);
-    const hasAnyTextTranslations = locales.some(locale => Object.keys(localizations[locale] || {}).length > 0);
-    imageDebug('apply-start', {
-      locales,
-      imageSourceEnabled: imageSource.enabled,
-      hasAnyTextTranslations
-    });
+    const locales = dedupeLocales(requestedLocales.length > 0 ? requestedLocales : Object.keys(localizations));
 
     if (locales.length === 0) {
       figma.ui.postMessage({
         type: 'apply-error',
         message: 'No target locales provided'
-      });
-      return;
-    }
-
-    if (!imageSource.enabled && !hasAnyTextTranslations) {
-      figma.ui.postMessage({
-        type: 'apply-error',
-        message: 'No localizations found in the response'
       });
       return;
     }
@@ -962,11 +1165,85 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       return;
     }
 
-    const originalFrame = selectedNode;
-    const frameHeight = originalFrame.height;
     const spacing = 40;
+    const sourceTexts: TextInfo[] = [];
+    extractTextNodes(originalFrame, sourceTexts);
+    const sourceTextIds = sourceTexts.map(text => text.id);
+
+    const localePlans = locales.map(locale => {
+      const translations = getLocaleTranslations(localizations, locale);
+      const translationCount = Object.keys(translations).length;
+      const existingNode = findExistingLocalizedNode(originalFrame, locale);
+      return {
+        locale,
+        translations,
+        translationCount,
+        existingNode,
+        isExisting: Boolean(existingNode)
+      };
+    });
+
+    const missingNewLocales = localePlans
+      .filter(plan => !plan.isExisting && plan.translationCount === 0 && !imageSource.enabled)
+      .map(plan => plan.locale);
+
+    if (missingNewLocales.length > 0) {
+      figma.ui.postMessage({
+        type: 'apply-error',
+        message: `Full JSON required for first-time localization. Missing translations for new locales: ${missingNewLocales.join(', ')}`
+      });
+      return;
+    }
+
+    const incompleteNewLocales: string[] = [];
+    if (sourceTextIds.length > 0) {
+      for (const plan of localePlans) {
+        if (plan.isExisting || plan.translationCount === 0) {
+          continue;
+        }
+
+        let missingCount = 0;
+        for (const textId of sourceTextIds) {
+          if (!Object.prototype.hasOwnProperty.call(plan.translations, textId)) {
+            missingCount++;
+          }
+        }
+
+        if (missingCount > 0) {
+          incompleteNewLocales.push(`${plan.locale} (${missingCount} missing IDs)`);
+        }
+      }
+    }
+
+    if (incompleteNewLocales.length > 0) {
+      figma.ui.postMessage({
+        type: 'apply-error',
+        message: `Full JSON required for new locales. Incomplete translations: ${incompleteNewLocales.join(', ')}`
+      });
+      return;
+    }
+
+    const hasAnyTextTranslations = localePlans.some(plan => plan.translationCount > 0);
+    const localesToProcess = localePlans
+      .filter(plan => plan.translationCount > 0 || imageSource.enabled)
+      .map(plan => plan.locale);
+    imageDebug('apply-start', {
+      locales,
+      localesToProcess,
+      imageSourceEnabled: imageSource.enabled,
+      hasAnyTextTranslations
+    });
+
+    if (!imageSource.enabled && !hasAnyTextTranslations) {
+      figma.ui.postMessage({
+        type: 'apply-error',
+        message: 'No localizations found in the response'
+      });
+      return;
+    }
 
     let createdCount = 0;
+    let updatedCount = 0;
     let imageReplacedCount = 0;
     let imageSkippedCount = 0;
     let imageAmbiguousCount = 0;
@@ -993,25 +1270,37 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       return;
     }
 
-    for (let i = 0; i < locales.length; i++) {
-      const locale = locales[i];
-      const translations = localizations[locale] || {};
+    for (let i = 0; i < localesToProcess.length; i++) {
+      const locale = localesToProcess[i];
+      const localePlan = localePlans.find(plan => plan.locale === locale);
+      if (!localePlan) {
+        continue;
+      }
+
+      const translations = localePlan.translations;
       imageDebug('locale-start', {
         locale,
         localeIndex: i + 1,
-        totalLocales: locales.length,
-        translationCount: Object.keys(translations).length
+        totalLocales: localesToProcess.length,
+        translationCount: Object.keys(translations).length,
+        mode: localePlan.isExisting ? 'update' : 'create'
       });
 
       try {
-        const clonedFrame = originalFrame.clone();
-        clonedFrame.name = `${originalFrame.name}_${locale}`;
-        clonedFrame.y = originalFrame.y + (i + 1) * (frameHeight + spacing);
+        let targetFrame: LocalizableContainerNode;
+        if (localePlan.existingNode) {
+          targetFrame = localePlan.existingNode;
+        } else {
+          const clonedFrame = originalFrame.clone();
+          clonedFrame.name = `${originalFrame.name}_${locale}`;
+          clonedFrame.y = getNextLocalizedVariantY(originalFrame, spacing);
+          targetFrame = clonedFrame;
+        }
 
         const nodeMapping = new Map<string, TextNode>();
-        buildNodeMapping(originalFrame, clonedFrame, nodeMapping);
+        buildNodeMapping(originalFrame, targetFrame, nodeMapping);
         const sceneNodeMapping = new Map<string, SceneNode>();
-        buildSceneNodeMapping(originalFrame, clonedFrame, sceneNodeMapping);
+        buildSceneNodeMapping(originalFrame, targetFrame, sceneNodeMapping);
 
         // Load fonts for all translated text nodes first.
         for (const [originalId] of Object.entries(translations)) {
@@ -1296,10 +1585,16 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
           }
         }
 
-        createdCount++;
+        if (localePlan.isExisting) {
+          updatedCount++;
+        } else {
+          createdCount++;
+        }
+
         imageDebug('locale-complete', {
           locale,
           createdCountSoFar: createdCount,
+          updatedCountSoFar: updatedCount,
           replaced: imageReplacedCount,
           skipped: imageSkippedCount,
           ambiguous: imageAmbiguousCount,
@@ -1311,7 +1606,8 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     }
 
     imageDebug('apply-complete', {
-      frameCount: createdCount,
+      createdCount,
+      updatedCount,
       imageReplacedCount,
       imageSkippedCount,
       imageAmbiguousCount,
@@ -1322,6 +1618,8 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     figma.ui.postMessage({
       type: 'apply-success',
       frameCount: createdCount,
+      createdCount,
+      updatedCount,
       imageReplacedCount,
       imageSkippedCount,
       imageAmbiguousCount,
@@ -1330,7 +1628,7 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     });
 
     figma.notify(
-      `✨ Created ${createdCount} localized frames. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageAmbiguousCount} ambiguous, ${imageFailedCount} failed.`
+      `✨ Localizations applied. ${createdCount} created, ${updatedCount} updated. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageAmbiguousCount} ambiguous, ${imageFailedCount} failed.`
     );
     return;
   }
