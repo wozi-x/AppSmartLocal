@@ -404,11 +404,11 @@
                 <textarea id="prompt" class="tall">You are a senior localization specialist for mobile app UI copy.
 
 ## TASK
-Translate UI strings to **match the original design's visual balance** while sounding natural in each target language.
+Translate UI strings to **match the original design's visual balance** while sounding natural and culturally native in each target language.
 
-## CRITICAL CONSTRAINT: LENGTH MATCHING
+## CRITICAL CONSTRAINT: LENGTH + WIDTH FIT
 
-### Target: Match `charCount` as closely as possible
+### Target: Match `charCount` and fit likely width constraints
 
 | Difference | Status | Action |
 |------------|--------|--------|
@@ -418,27 +418,45 @@ Translate UI strings to **match the original design's visual balance** while sou
 | -6 or more | ❌ Too short | Expand naturally |
 
 **Why this matters:**
-- Too long → text overflows, truncates, breaks UI
-- Too short → awkward whitespace, unbalanced visual design
-- Just right → maintains designer's intended visual rhythm
+- Too long -> text overflows, truncates, breaks UI
+- Too short -> awkward whitespace, unbalanced visual design
+- Just right -> maintains designer's intended visual rhythm
 
-### Length-Matching Strategies:
+### How to use the sizing fields
+- `charCount`: primary target length.
+- `lines`: estimated visible lines in the source design.
+- `boxWidthPx`: width of the text box itself.
+- `containerWidthPx`: width of the nearest container around the text.
+
+Treat `charCount` as the main target, and use `boxWidthPx` / `containerWidthPx` to decide if wording must be shorter or can be slightly fuller.
+
+### Width-aware length strategies
 
 **If too long:**
 - Drop articles (the, a, les, un, el)
 - Use shorter synonyms
 - Remove filler words
+- Prefer compact punctuation and phrasing
+- For narrow boxes, avoid long compounds and verbose clauses
 
 **If too short:**
 - Add natural particles/softeners
 - Use slightly longer synonyms
 - Add appropriate emphasis words
+- Expand naturally without sounding formal or robotic
+
+### Localization quality rule
+For each string, optimize in this order:
+1. Preserve meaning and intent.
+2. Sound like a real local app (not textbook translation).
+3. Fit likely width/line constraints using the provided sizing fields.
+4. Keep close to `charCount` (ideally ±3).
 
 ---
 
 ## CULTURAL & LINGUISTIC NATURALNESS
 
-Write like a native copywriter at a top local app—not a translator.
+Write like a native copywriter at a top local app - not a translator.
 
 ### Chinese (zh) — Modern, casual Mainland style
 | ❌ Avoid | ✅ Use Instead |
@@ -447,7 +465,7 @@ Write like a native copywriter at a top local app—not a translator.
 | Formal structure (滑动以成长) | Natural flow (滑动变强, 越学越多) |
 | Stiff verbs (获取, 收集) | Casual verbs (拿, 集, 攒) |
 
-**Tone**: 小红书, 抖音, 多邻国 — friendly, playful, young
+**Tone**: 小红书, 抖音, 多邻国 - friendly, playful, young
 
 ---
 
@@ -458,7 +476,7 @@ Write like a native copywriter at a top local app—not a translator.
 | Stiff kanji-heavy | Mix hiragana for softness |
 | Literal translations | Natural game/app phrasing |
 
-**Tone**: Duolingo JP, LINE — warm, encouraging
+**Tone**: Duolingo JP, LINE - warm, encouraging
 
 ---
 
@@ -468,7 +486,7 @@ Write like a native copywriter at a top local app—not a translator.
 | Formal (수집하세요, 획득) | Friendly (모아봐, 받기) |
 | Corporate tone | Playful, youthful |
 
-**Tone**: 토스, 당근마켓 — modern, friendly
+**Tone**: 토스, 당근마켓 - modern, friendly
 
 ---
 
@@ -478,7 +496,7 @@ Write like a native copywriter at a top local app—not a translator.
 | Formal (Adquiera, Visualice) | Direct (Gana, Mira) |
 | Wordy phrases | Punchy, short |
 
-**Tone**: Duolingo ES — fun, direct
+**Tone**: Duolingo ES - fun, direct
 
 ---
 
@@ -488,16 +506,17 @@ Write like a native copywriter at a top local app—not a translator.
 | Vous form | Tu form |
 | Long phrases | Compact, modern |
 
-**Tone**: French startup apps — casual, friendly
+**Tone**: French startup apps - casual, friendly
 
 ---
 
 ## QUALITY CHECKLIST (Per String)
 
 1. **Length**: Is it within ±3 chars of `charCount`?
-2. **Natural**: Would a young native speaker say this?
-3. **Tone**: Does it feel like a popular local app?
-4. **No red flags**: Free of literary/formal/textbook phrasing?
+2. **Width Fit**: Is it likely to fit `boxWidthPx` / `containerWidthPx` without overflow?
+3. **Natural**: Would a young native speaker say this?
+4. **Tone**: Does it feel like a popular local app?
+5. **No red flags**: Free of literary/formal/textbook phrasing?
 
 ---
 
@@ -508,21 +527,15 @@ Write like a native copywriter at a top local app—not a translator.
     {
       "id": "string",
       "text": "original text",
-      "charCount": number,  // 🎯 TARGET LENGTH TO MATCH
-      "lines": number
-    }
-  ],
-  "images": [
-    {
-      "id": "string",        // Image node ID
-      "nodeName": "string",  // Image layer name
-      "fillIndex": number    // Index of IMAGE paint in node.fills
+      "charCount": number,
+      "lines": number,
+      "boxWidthPx": number,
+      "containerWidthPx": number
     }
   ],
   "targetLanguages": ["es", "fr", "ja", "zh", "ko"]
 }
 ```
-`images` is included only when visible image layers are found.
 
 ## OUTPUT FORMAT
 Return **only valid JSON**.
@@ -538,7 +551,7 @@ Return **only valid JSON**.
 
 ---
 
-**Translate the following, matching each string's target length:**
+**Translate the following, matching each string's target length and likely width fit:**
 </textarea>
             </div>
 
@@ -1187,11 +1200,10 @@ Return **only valid JSON**.
             if (msg.type === 'prompt-generated') {
                 extractedData = msg.extractedData;
                 const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
-                const imageCount = typeof msg.imageCount === 'number' ? msg.imageCount : 0;
                 if (lastGenerateCopySucceeded) {
-                    showStatus(`Prompt copied! Found ${textCount} text nodes and ${imageCount} image nodes.`, 'success');
+                    showStatus(`Prompt copied! Found ${textCount} text nodes.`, 'success');
                 } else {
-                    showStatus(`Prompt generated (clipboard blocked). Found ${textCount} text nodes and ${imageCount} image nodes. Copy from Generated Prompt box.`, 'info');
+                    showStatus(`Prompt generated (clipboard blocked). Found ${textCount} text nodes. Copy from Generated Prompt box.`, 'info');
                 }
                 return;
             }

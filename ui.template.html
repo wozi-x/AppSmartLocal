@@ -1049,11 +1049,10 @@
             if (msg.type === 'prompt-generated') {
                 extractedData = msg.extractedData;
                 const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
-                const imageCount = typeof msg.imageCount === 'number' ? msg.imageCount : 0;
                 if (lastGenerateCopySucceeded) {
-                    showStatus(`Prompt copied! Found ${textCount} text nodes and ${imageCount} image nodes.`, 'success');
+                    showStatus(`Prompt copied! Found ${textCount} text nodes.`, 'success');
                 } else {
-                    showStatus(`Prompt generated (clipboard blocked). Found ${textCount} text nodes and ${imageCount} image nodes. Copy from Generated Prompt box.`, 'info');
+                    showStatus(`Prompt generated (clipboard blocked). Found ${textCount} text nodes. Copy from Generated Prompt box.`, 'info');
                 }
                 return;
             }

@@ -69,6 +69,8 @@ interface TextInfo {
   text: string;
   charCount: number;
   lines: number;
+  boxWidthPx: number;
+  containerWidthPx: number;
 }
 
 interface ImageInfo {
@@ -80,7 +82,6 @@ interface ImageInfo {
 interface ExtractedData {
   texts: TextInfo[];
   targetLanguages: string[];
-  images?: ImageInfo[];
 }
 
 interface Localizations {
@@ -164,6 +165,37 @@ function imageDebug(message: string, payload?: unknown): void {
   console.log(`[smartlocal:image] ${message}`);
 }
 
+function hasWidth(node: BaseNode | null): node is BaseNode & { width: number } {
+  return Boolean(node && 'width' in node && typeof (node as { width?: unknown }).width === 'number');
+}
+
+function getRoundedWidthPx(node: BaseNode | null): number | null {
+  if (!hasWidth(node)) {
+    return null;
+  }
+
+  const rounded = Math.round(node.width);
+  if (!Number.isFinite(rounded)) {
+    return null;
+  }
+
+  return Math.max(1, rounded);
+}
+
+function getContainerWidthPx(textNode: TextNode): number {
+  let parent: BaseNode | null = textNode.parent;
+
+  while (parent) {
+    const width = getRoundedWidthPx(parent);
+    if (width !== null) {
+      return width;
+    }
+    parent = parent.parent;
+  }
+
+  return getRoundedWidthPx(textNode) ?? 1;
+}
+
 // Extract all text nodes from a frame recursively
 function extractTextNodes(node: SceneNode, texts: TextInfo[]): void {
   if (node.type === 'TEXT') {
@@ -187,7 +219,9 @@ function extractTextNodes(node: SceneNode, texts: TextInfo[]): void {
       id: textNode.id,
       text: textNode.characters,
       charCount: textNode.characters.length,
-      lines
+      lines,
+      boxWidthPx: getRoundedWidthPx(textNode) ?? 1,
+      containerWidthPx: getContainerWidthPx(textNode)
     });
   }
 
@@ -816,13 +850,11 @@ figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
 
     const texts: TextInfo[] = [];
     extractTextNodes(selectedNode, texts);
-    const images: ImageInfo[] = [];
-    extractImageNodes(selectedNode, images);
 
-    if (texts.length === 0 && images.length === 0) {
+    if (texts.length === 0) {
       figma.ui.postMessage({
         type: 'prompt-error',
-        message: 'No visible text or image nodes found in the selected frame'
+        message: 'No visible text nodes found in the selected frame'
       });
       return;
     }
@@ -834,9 +866,6 @@ figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
       texts,
       targetLanguages: languages
     };
-    if (images.length > 0) {
-      extractedData.images = images;
-    }
 
     const fullPrompt = `${promptTemplate}
 
@@ -860,11 +889,10 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     figma.ui.postMessage({
       type: 'prompt-generated',
       textCount: texts.length,
-      imageCount: images.length,
       extractedData
     });
 
-    figma.notify(`📋 Prompt copied! Found ${texts.length} text nodes and ${images.length} image nodes.`);
+    figma.notify(`📋 Prompt copied! Found ${texts.length} text nodes.`);
     return;
   }
 
