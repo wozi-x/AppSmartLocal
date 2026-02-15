@@ -1,3 +1,4 @@
+// Deprecated: SmartLocal now supports serverless image folder import directly in the plugin UI.
 const fs = require('fs');
 const path = require('path');
 const http = require('http');

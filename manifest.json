@@ -13,9 +13,6 @@
   "networkAccess": {
     "allowedDomains": [
       "none"
-    ],
-    "devAllowedDomains": [
-      "http://localhost:3000"
     ]
   }
 }

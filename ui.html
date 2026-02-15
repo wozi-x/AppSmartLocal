@@ -173,6 +173,66 @@
             flex-direction: column;
         }
 
+        .flow-card {
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: var(--spacing-md);
+            background: #FAFAFA;
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-md);
+        }
+
+        .flow-header {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+        }
+
+        .flow-step {
+            background: #EAF4FC;
+            color: #0A6FB6;
+            border: 1px solid #B9DDF5;
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            flex-shrink: 0;
+        }
+
+        .flow-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-color);
+            line-height: 1.2;
+        }
+
+        .flow-note {
+            font-size: 10px;
+            color: #777;
+            line-height: 1.4;
+            margin-top: -6px;
+        }
+
+        .optional-badge {
+            background: #FFF4E8;
+            color: #9A5800;
+            border: 1px solid #F3D3AA;
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            flex-shrink: 0;
+        }
+
+        .section-tight {
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-xs);
+        }
+
         .row {
             display: flex;
             gap: var(--spacing-md);
@@ -305,6 +365,10 @@
             opacity: 0.5;
             pointer-events: none;
         }
+
+        .hidden-input {
+            display: none;
+        }
     </style>
 </head>
 
@@ -320,18 +384,24 @@
             <span id="selection-text">No frame selected (REQUIRED)</span>
         </div>
 
-        <!-- Input Section -->
-        <div class="section">
-            <label class="label" for="languages">Target Languages</label>
-            <input type="text" id="languages" placeholder="e.g. de-DE, en-US, fr-FR, ja, ko, pt-BR, zh-Hans, zh-Hant"
-                value="de-DE, en-AU, en-CA, en-GB, en-US, es-ES, fr-FR, hi, id, it, ja, ko, pl, pt-BR, ru, th, tr, vi, zh-Hans, zh-Hant">
-            <div class="hint">Comma-separated locale codes</div>
-        </div>
+        <div class="flow-card">
+            <div class="flow-header">
+                <span class="flow-step">Step 1</span>
+                <span class="flow-title">Generate Localization Prompt</span>
+            </div>
+            <div class="flow-note">Set locales, generate the prompt, then run it in ChatGPT/Claude.</div>
 
-        <!-- Prompt Section -->
-        <div class="section">
-            <label class="label" for="prompt">Localization Prompt Template</label>
-            <textarea id="prompt" class="tall">You are a senior localization specialist for mobile app UI copy.
+            <div class="section-tight">
+                <label class="label" for="languages">Target Languages</label>
+                <input type="text" id="languages"
+                    placeholder="e.g. de-DE, en-US, fr-FR, ja, ko, pt-BR, zh-Hans, zh-Hant"
+                    value="de-DE, en-AU, en-CA, en-GB, en-US, es-ES, fr-FR, hi, id, it, ja, ko, pl, pt-BR, ru, th, tr, vi, zh-Hans, zh-Hant">
+                <div class="hint">Comma-separated locale codes. Used for text localization and optional image matching.</div>
+            </div>
+
+            <div class="section-tight">
+                <label class="label" for="prompt">Localization Prompt Template</label>
+                <textarea id="prompt" class="tall">You are a senior localization specialist for mobile app UI copy.
 
 ## TASK
 Translate UI strings to **match the original design's visual balance** while sounding natural in each target language.
@@ -470,88 +540,156 @@ Return **only valid JSON**.
 
 **Translate the following, matching each string's target length:**
 </textarea>
-        </div>
+            </div>
 
-        <div class="section">
             <button id="generate" class="btn btn-primary">
                 <span class="icon-text">📋</span> Generate & Copy Prompt
             </button>
-        </div>
 
-        <!-- Response Section -->
-        <div class="section">
-            <label class="label" for="response">Paste AI Response JSON</label>
-            <textarea id="response" placeholder='{ "localizations": { "es": { ... } } }'></textarea>
-        </div>
-
-        <div class="section">
-            <label class="checkbox-row" for="image-source-enabled">
-                <input type="checkbox" id="image-source-enabled">
-                <span>Replace images from local server</span>
-            </label>
-            <div id="image-source-fields" class="image-source-fields disabled">
-                <label class="label" for="image-source-url">Local Image Server URL</label>
-                <input type="text" id="image-source-url" placeholder="http://127.0.0.1:3000/image">
-                <label class="label" for="image-source-root-path">Screenshots Root Path (Optional)</label>
-                <input type="text" id="image-source-root-path"
-                    placeholder="/Users/x/Developer/WoziAppOne/fastlane/screenshots/Wozi">
-                <div class="hint">Start server: <code>npm run image-server -- --root "/Users/x/Developer/WoziAppOne/fastlane/screenshots/Wozi"</code></div>
-                <div class="hint">Request format: <code>?locale=&lt;locale&gt;&amp;nodeName=&lt;normalizedNodeName&gt;&amp;rootPath=&lt;optionalPath&gt;</code></div>
+            <div class="section-tight">
+                <label class="label" for="generated-prompt">Generated Prompt</label>
+                <textarea id="generated-prompt" readonly
+                    placeholder="Generated prompt (with INPUT JSON) will appear here after you click Generate & Copy Prompt."></textarea>
+                <div class="hint">If clipboard copy fails in Figma, copy from this box manually.</div>
+                <button id="copy-generated-prompt" class="btn btn-secondary" type="button" style="margin-top:8px;">
+                    <span class="icon-text">📄</span> Copy Generated Prompt
+                </button>
             </div>
         </div>
 
-        <div class="section">
-            <div id="apply-error" class="error-message"></div>
-            <button id="apply" class="btn btn-success">
-                <span class="icon-text">✨</span> Apply Localization
-            </button>
+        <div class="flow-card">
+            <div class="flow-header">
+                <span class="flow-step">Step 2</span>
+                <span class="flow-title">Apply Localized Content</span>
+            </div>
+            <div class="flow-note">Paste the AI JSON response and apply. Image replacement below is optional.</div>
+
+            <div class="section-tight">
+                <label class="label" for="response">Paste AI Response JSON</label>
+                <textarea id="response" placeholder='{ "localizations": { "es": { ... } } }'></textarea>
+            </div>
+
+            <div class="flow-card" style="background:#FFF; border-style:dashed;">
+                <div class="flow-header">
+                    <span class="optional-badge">Optional</span>
+                    <span class="flow-title">Replace i18n Images</span>
+                </div>
+                <div class="flow-note">You can leave this off and still apply text localizations normally.</div>
+
+                <label class="checkbox-row" for="image-source-enabled">
+                    <input type="checkbox" id="image-source-enabled">
+                    <span>Enable localized image replacement</span>
+                </label>
+
+                <div id="image-source-fields" class="image-source-fields disabled">
+                    <input type="file" id="image-source-folder-input" class="hidden-input" multiple webkitdirectory
+                        directory accept=".png,.jpg,.jpeg,.webp">
+                    <button id="choose-assets-folder" class="btn btn-secondary" type="button">
+                        <span class="icon-text">📁</span> Choose Assets Folder
+                    </button>
+                    <div id="image-source-summary" class="hint">No folder selected.</div>
+                    <div class="hint">Expected structure: <code>&lt;root&gt;/&lt;locale&gt;/&lt;filename&gt;.&lt;ext&gt;</code></div>
+                    <div class="hint">Allowed: <code>png, jpg, jpeg, webp</code> · Max: <code>20MB</code>/file · Up to
+                        <code>5000</code> files
+                    </div>
+                </div>
+
+                <div id="image-report-section" class="section" style="display:none;">
+                    <button id="copy-image-report" class="btn btn-secondary" type="button">
+                        <span class="icon-text">🧾</span> Copy Image Mismatch Report
+                    </button>
+                </div>
+            </div>
+
+            <div class="section">
+                <div id="apply-error" class="error-message"></div>
+                <button id="apply" class="btn btn-success">
+                    <span class="icon-text">✨</span> Apply Localization
+                </button>
+            </div>
         </div>
 
         <!-- Footer -->
         <div style="text-align: right; color: #888; font-size: 10px; margin-top: -8px;">
-            v0.0.1
+            v0.0.2
         </div>
 
     </div>
 
     <script>
+        const ALLOWED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
+        const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+        const MAX_CATALOG_ENTRIES = 5000;
+
         const languagesInput = document.getElementById('languages');
         const promptTextarea = document.getElementById('prompt');
         const responseTextarea = document.getElementById('response');
         const imageSourceEnabledInput = document.getElementById('image-source-enabled');
-        const imageSourceUrlInput = document.getElementById('image-source-url');
-        const imageSourceRootPathInput = document.getElementById('image-source-root-path');
         const imageSourceFields = document.getElementById('image-source-fields');
+        const imageSourceFolderInput = document.getElementById('image-source-folder-input');
+        const chooseAssetsFolderBtn = document.getElementById('choose-assets-folder');
+        const imageSourceSummary = document.getElementById('image-source-summary');
+        const imageReportSection = document.getElementById('image-report-section');
+        const copyImageReportBtn = document.getElementById('copy-image-report');
         const generateBtn = document.getElementById('generate');
+        const generatedPromptTextarea = document.getElementById('generated-prompt');
+        const copyGeneratedPromptBtn = document.getElementById('copy-generated-prompt');
         const applyBtn = document.getElementById('apply');
         const statusDiv = document.getElementById('status');
         const selectionIndicator = document.getElementById('selection-indicator');
         const selectionText = document.getElementById('selection-text');
-        const selectionIcon = document.getElementById('selection-icon');
         const applyError = document.getElementById('apply-error');
 
-        // Initial state
         generateBtn.disabled = true;
-        generateBtn.title = "Please select a frame to generate prompt";
-        generateBtn.style.opacity = "0.5";
-        generateBtn.style.cursor = "not-allowed";
+        generateBtn.title = 'Please select a frame to generate prompt';
+        generateBtn.style.opacity = '0.5';
+        generateBtn.style.cursor = 'not-allowed';
 
-        // Initial state for Apply button
         applyBtn.disabled = true;
-        applyBtn.style.opacity = "0.5";
-        applyBtn.style.cursor = "not-allowed";
-        applyBtn.title = "Paste response JSON or enable image replacement";
+        applyBtn.style.opacity = '0.5';
+        applyBtn.style.cursor = 'not-allowed';
+        applyBtn.title = 'Paste response JSON or enable image replacement';
 
-        // Store extracted data for validation
         let extractedData = null;
         let statusTimeout = null;
-
-        // Debounce timers for saving
         let saveLocalesTimeout = null;
         let savePromptTimeout = null;
         let saveImageSourceTimeout = null;
+        let imageCatalog = null;
+        const imageFilesByKey = new Map();
+        let imageCatalogSummary = 'No folder selected.';
+        let lastImageIssues = [];
+        let lastGeneratedPrompt = '';
+        let lastGenerateCopySucceeded = false;
+        const IMAGE_DEBUG_ENABLED = true;
 
-        // Save locales with debounce (500ms delay)
+        function imageDebug(message, payload) {
+            if (!IMAGE_DEBUG_ENABLED) return;
+            if (payload !== undefined) {
+                console.log(`[smartlocal:image-ui] ${message}`, payload);
+                return;
+            }
+            console.log(`[smartlocal:image-ui] ${message}`);
+        }
+
+        function clearImageFilesMap() {
+            imageFilesByKey.clear();
+        }
+
+        function setImageFilesMap(nextMap) {
+            clearImageFilesMap();
+            for (const [key, file] of nextMap.entries()) {
+                imageFilesByKey.set(key, file);
+            }
+        }
+
+        function getTargetLanguages() {
+            return languagesInput.value
+                .split(',')
+                .map(value => value.trim())
+                .filter(value => value.length > 0);
+        }
+
         function saveLocales() {
             if (saveLocalesTimeout) clearTimeout(saveLocalesTimeout);
             saveLocalesTimeout = setTimeout(() => {
@@ -564,7 +702,6 @@ Return **only valid JSON**.
             }, 500);
         }
 
-        // Save prompt with debounce (500ms delay)
         function savePrompt() {
             if (savePromptTimeout) clearTimeout(savePromptTimeout);
             savePromptTimeout = setTimeout(() => {
@@ -581,12 +718,8 @@ Return **only valid JSON**.
             return Boolean(imageSourceEnabledInput.checked);
         }
 
-        function getImageSourceUrl() {
-            return imageSourceUrlInput.value.trim();
-        }
-
-        function getImageSourceRootPath() {
-            return imageSourceRootPathInput.value.trim();
+        function updateImageSourceSummary() {
+            imageSourceSummary.textContent = imageCatalogSummary;
         }
 
         function updateImageSourceFieldsState() {
@@ -594,21 +727,25 @@ Return **only valid JSON**.
             imageSourceFields.classList.toggle('disabled', !enabled);
         }
 
+        function updateImageReportState() {
+            imageReportSection.style.display = lastImageIssues.length > 0 ? 'flex' : 'none';
+        }
+
         function updateApplyButtonState() {
             const hasResponse = responseTextarea.value.trim().length > 0;
-            const imageModeReady = isImageSourceEnabled() && getImageSourceUrl().length > 0;
+            const imageModeReady = isImageSourceEnabled() && imageCatalog && imageCatalog.entries && imageCatalog.entries.length > 0;
             const canApply = hasResponse || imageModeReady;
 
             applyBtn.disabled = !canApply;
-            applyBtn.style.opacity = canApply ? "1" : "0.5";
-            applyBtn.style.cursor = canApply ? "pointer" : "not-allowed";
+            applyBtn.style.opacity = canApply ? '1' : '0.5';
+            applyBtn.style.cursor = canApply ? 'pointer' : 'not-allowed';
 
             if (canApply) {
-                applyBtn.title = "Apply localization";
-            } else if (isImageSourceEnabled()) {
-                applyBtn.title = "Provide local image server URL or response JSON";
+                applyBtn.title = 'Apply localization';
+            } else if (isImageSourceEnabled() && !imageCatalog) {
+                applyBtn.title = 'Choose assets folder for image replacement';
             } else {
-                applyBtn.title = "Paste the AI response JSON or enable image replacement";
+                applyBtn.title = 'Paste AI response JSON or enable image replacement';
             }
         }
 
@@ -619,38 +756,12 @@ Return **only valid JSON**.
                     pluginMessage: {
                         type: 'save-image-source',
                         imageSource: {
-                            enabled: isImageSourceEnabled(),
-                            baseUrl: getImageSourceUrl(),
-                            rootPath: getImageSourceRootPath()
+                            enabled: isImageSourceEnabled()
                         }
                     }
                 }, '*');
             }, 500);
         }
-
-        // Listen for changes on locales input
-        languagesInput.addEventListener('input', saveLocales);
-
-        // Listen for changes on prompt textarea
-        promptTextarea.addEventListener('input', savePrompt);
-
-        responseTextarea.addEventListener('input', () => {
-            updateApplyButtonState();
-            if (responseTextarea.value.trim().length > 0) hideStatus();
-        });
-
-        imageSourceEnabledInput.addEventListener('change', () => {
-            updateImageSourceFieldsState();
-            updateApplyButtonState();
-            saveImageSource();
-        });
-
-        imageSourceUrlInput.addEventListener('input', () => {
-            updateApplyButtonState();
-            saveImageSource();
-        });
-
-        imageSourceRootPathInput.addEventListener('input', saveImageSource);
 
         function showStatus(message, type) {
             if (statusTimeout) {
@@ -659,9 +770,8 @@ Return **only valid JSON**.
             }
 
             statusDiv.textContent = message;
-            statusDiv.className = 'status show ' + type;
+            statusDiv.className = `status show ${type}`;
 
-            // Auto-hide after 5 seconds
             statusTimeout = setTimeout(() => {
                 hideStatus();
             }, 5000);
@@ -678,52 +788,283 @@ Return **only valid JSON**.
             applyError.className = 'error-message show';
         }
 
-        function getTargetLanguages() {
-            return languagesInput.value
-                .split(',')
-                .map(s => s.trim())
-                .filter(s => s.length > 0);
+        function createImageFileKey(locale, relPath, size, lastModified, index) {
+            return `${locale}::${relPath}::${size}::${lastModified}::${index}`;
         }
 
-        // Generate & Copy Prompt
+        function isLocaleLikeSegment(segment) {
+            if (typeof segment !== 'string') return false;
+            const value = segment.trim();
+            if (!value) return false;
+            return /^[A-Za-z]{2}(?:-[A-Za-z0-9]+)*$/.test(value);
+        }
+
+        function findLocaleIndex(pathSegments) {
+            for (let i = 0; i < pathSegments.length - 1; i++) {
+                if (isLocaleLikeSegment(pathSegments[i])) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        function buildImageCatalog(files) {
+            imageDebug('catalog-build:start', { inputCount: files.length });
+            const entries = [];
+            const fileMap = new Map();
+            const locales = new Set();
+            const sampleLocaleMappings = [];
+            let skippedUnsupported = 0;
+            let skippedOversized = 0;
+            let skippedNoLocale = 0;
+            let exceededLimit = false;
+
+            for (const file of files) {
+                const relativePath = (file.webkitRelativePath || file.name || '').replace(/\\/g, '/').trim();
+                if (!relativePath) {
+                    skippedNoLocale++;
+                    continue;
+                }
+
+                const pathSegments = relativePath.split('/').filter(Boolean);
+                if (pathSegments.length < 2) {
+                    skippedNoLocale++;
+                    continue;
+                }
+
+                const localeIndex = findLocaleIndex(pathSegments);
+                if (localeIndex < 0) {
+                    skippedNoLocale++;
+                    continue;
+                }
+                const locale = pathSegments[localeIndex].trim();
+                const relPathFromLocale = pathSegments.slice(localeIndex).join('/');
+
+                const filename = pathSegments[pathSegments.length - 1];
+                const extMatch = filename.match(/\.([^.]+)$/);
+                if (!extMatch) {
+                    skippedUnsupported++;
+                    continue;
+                }
+
+                const extension = extMatch[1].toLowerCase();
+                if (!ALLOWED_IMAGE_EXTENSIONS.has(extension)) {
+                    skippedUnsupported++;
+                    continue;
+                }
+
+                if (file.size > MAX_IMAGE_BYTES) {
+                    skippedOversized++;
+                    continue;
+                }
+
+                if (entries.length >= MAX_CATALOG_ENTRIES) {
+                    exceededLimit = true;
+                    break;
+                }
+
+                const stem = filename.slice(0, -(extMatch[0].length)).trim();
+                if (!stem) {
+                    skippedUnsupported++;
+                    continue;
+                }
+
+                const key = createImageFileKey(locale, relPathFromLocale, file.size, file.lastModified, entries.length);
+                entries.push({
+                    key,
+                    locale,
+                    relPath: relPathFromLocale,
+                    stem,
+                    extension,
+                    size: file.size
+                });
+                fileMap.set(key, file);
+                locales.add(locale);
+                if (sampleLocaleMappings.length < 8) {
+                    sampleLocaleMappings.push({
+                        relativePath,
+                        locale,
+                        relPathFromLocale
+                    });
+                }
+            }
+
+            if (exceededLimit) {
+                imageDebug('catalog-build:limit-exceeded', {
+                    validEntryCount: entries.length,
+                    max: MAX_CATALOG_ENTRIES
+                });
+                return {
+                    catalog: null,
+                    fileMap,
+                    summary: `Catalog limit reached: maximum ${MAX_CATALOG_ENTRIES} valid files.`,
+                    error: `Catalog limit exceeded. Keep at most ${MAX_CATALOG_ENTRIES} valid image files.`
+                };
+            }
+
+            if (entries.length === 0) {
+                imageDebug('catalog-build:no-valid-entries', {
+                    skippedUnsupported,
+                    skippedOversized,
+                    skippedNoLocale
+                });
+                return {
+                    catalog: null,
+                    fileMap: new Map(),
+                    summary: `No valid images found. Skipped ${skippedUnsupported} unsupported, ${skippedOversized} oversized, ${skippedNoLocale} missing-locale files.`,
+                    error: null
+                };
+            }
+
+            const now = new Date();
+            const summary = `Loaded ${entries.length} images across ${locales.size} locales at ${now.toLocaleTimeString()}. Skipped ${skippedUnsupported} unsupported, ${skippedOversized} oversized, ${skippedNoLocale} missing-locale files.`;
+            imageDebug('catalog-build:done', {
+                entries: entries.length,
+                localeCount: locales.size,
+                skippedUnsupported,
+                skippedOversized,
+                skippedNoLocale,
+                sampleLocaleMappings
+            });
+
+            return {
+                catalog: {
+                    version: 1,
+                    mode: 'folder',
+                    entries
+                },
+                fileMap,
+                summary,
+                error: null
+            };
+        }
+
+        async function copyText(text) {
+            try {
+                await navigator.clipboard.writeText(text);
+                return true;
+            } catch (err) {
+                try {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    const copied = document.execCommand('copy');
+                    document.body.removeChild(textarea);
+                    return Boolean(copied);
+                } catch (fallbackErr) {
+                    return false;
+                }
+            }
+        }
+
+        languagesInput.addEventListener('input', saveLocales);
+        promptTextarea.addEventListener('input', savePrompt);
+
+        responseTextarea.addEventListener('input', () => {
+            updateApplyButtonState();
+            if (responseTextarea.value.trim().length > 0) hideStatus();
+        });
+
+        imageSourceEnabledInput.addEventListener('change', () => {
+            updateImageSourceFieldsState();
+            updateApplyButtonState();
+            saveImageSource();
+        });
+
+        chooseAssetsFolderBtn.addEventListener('click', () => {
+            imageSourceFolderInput.click();
+        });
+
+        imageSourceFolderInput.addEventListener('change', () => {
+            const files = Array.from(imageSourceFolderInput.files || []);
+            if (files.length === 0) {
+                imageDebug('folder-select:empty-selection');
+                return;
+            }
+
+            const result = buildImageCatalog(files);
+            imageCatalog = result.catalog;
+            setImageFilesMap(result.fileMap);
+            imageCatalogSummary = result.summary;
+            updateImageSourceSummary();
+            updateApplyButtonState();
+
+            if (result.error) {
+                imageDebug('folder-select:error', { error: result.error });
+                showApplyError(result.error);
+            } else {
+                imageDebug('folder-select:ready', {
+                    entries: imageCatalog.entries.length
+                });
+                hideStatus();
+                showStatus(`Assets loaded: ${imageCatalog.entries.length} files ready for matching.`, 'success');
+            }
+        });
+
+        copyImageReportBtn.addEventListener('click', async () => {
+            if (!lastImageIssues.length) {
+                showStatus('No image mismatch report available yet.', 'info');
+                return;
+            }
+
+            const report = {
+                generatedAt: new Date().toISOString(),
+                issueCount: lastImageIssues.length,
+                issues: lastImageIssues
+            };
+            await copyText(JSON.stringify(report, null, 2));
+            showStatus('Image mismatch report copied.', 'success');
+        });
+
+        copyGeneratedPromptBtn.addEventListener('click', async () => {
+            if (!lastGeneratedPrompt) {
+                showStatus('Generate a prompt first.', 'info');
+                return;
+            }
+
+            const copied = await copyText(lastGeneratedPrompt);
+            if (copied) {
+                showStatus('Generated prompt copied.', 'success');
+            } else {
+                showStatus('Clipboard blocked. Copy manually from the Generated Prompt box.', 'error');
+            }
+        });
+
         generateBtn.onclick = () => {
             const languages = getTargetLanguages();
             if (languages.length === 0) {
                 showStatus('Please enter at least one target language', 'error');
                 return;
             }
-            hideStatus();
 
+            hideStatus();
             parent.postMessage({
                 pluginMessage: {
                     type: 'generate-prompt',
-                    languages: languages,
+                    languages,
                     promptTemplate: promptTextarea.value
                 }
             }, '*');
         };
 
-        // Apply Localization
         applyBtn.onclick = () => {
             const responseText = responseTextarea.value.trim();
             const imageSourceEnabled = isImageSourceEnabled();
-            const imageSourceUrl = getImageSourceUrl();
-            const imageSourceRootPath = getImageSourceRootPath();
             const hasResponse = responseText.length > 0;
 
             if (!hasResponse && !imageSourceEnabled) {
-                showStatus('Please paste the AI response first', 'error');
+                showApplyError('Please paste AI response JSON or enable image replacement.');
                 return;
             }
 
-            if (imageSourceEnabled && imageSourceUrl.length === 0) {
-                showApplyError('Image source URL is required when image replacement is enabled');
+            if (imageSourceEnabled && (!imageCatalog || !imageCatalog.entries || imageCatalog.entries.length === 0)) {
+                showApplyError('Choose a localized assets folder before applying image replacement.');
                 return;
             }
 
             hideStatus();
 
-            // Parse and validate JSON
             const languages = getTargetLanguages();
             if (languages.length === 0) {
                 showApplyError('Please enter at least one target language');
@@ -735,7 +1076,7 @@ Return **only valid JSON**.
                 let response;
                 try {
                     response = JSON.parse(responseText);
-                } catch (e) {
+                } catch (err) {
                     showApplyError('Invalid JSON format. Please check the response or generate a new one.');
                     return;
                 }
@@ -753,115 +1094,184 @@ Return **only valid JSON**.
                     return;
                 }
 
-                // Validate against extracted data if available
                 if (extractedData && extractedData.texts) {
-                    const textIds = extractedData.texts.map(t => t.id);
+                    const textIds = extractedData.texts.map(item => item.id);
                     for (const lang of languages) {
                         const langData = localizations[lang];
-                        const missingIds = textIds.filter(id => !langData.hasOwnProperty(id));
+                        const missingIds = textIds.filter(id => !Object.prototype.hasOwnProperty.call(langData, id));
                         if (missingIds.length > 0) {
-                            showStatus(`Missing text IDs for ${lang}: ${missingIds.length} texts`, 'error');
+                            showApplyError(`Missing text IDs for ${lang}: ${missingIds.length} items`);
                             return;
                         }
                     }
                 }
-            } else if (!imageSourceEnabled) {
-                showApplyError('Please paste AI response JSON or enable image replacement');
-                return;
             }
 
             parent.postMessage({
                 pluginMessage: {
                     type: 'apply-localization',
-                    localizations: localizations,
+                    localizations,
                     locales: languages,
                     imageSource: {
                         enabled: imageSourceEnabled,
-                        baseUrl: imageSourceUrl,
-                        rootPath: imageSourceRootPath
+                        mode: 'folder',
+                        catalog: imageSourceEnabled ? imageCatalog : null
                     }
                 }
             }, '*');
+            imageDebug('apply-sent', {
+                locales: languages,
+                hasResponse,
+                imageSourceEnabled,
+                catalogEntries: imageSourceEnabled && imageCatalog ? imageCatalog.entries.length : 0
+            });
         };
 
-        // Handle messages from plugin
         window.onmessage = async (event) => {
             const msg = event.data.pluginMessage;
             if (!msg) return;
 
-            if (msg.type === 'copy-to-clipboard') {
-                try {
-                    await navigator.clipboard.writeText(msg.text);
-                } catch (e) {
-                    const textarea = document.createElement('textarea');
-                    textarea.value = msg.text;
-                    document.body.appendChild(textarea);
-                    textarea.select();
-                    document.execCommand('copy');
-                    document.body.removeChild(textarea);
+            if (msg.type === 'request-image-bytes') {
+                const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
+                const fileKey = typeof msg.fileKey === 'string' ? msg.fileKey : '';
+                const file = imageFilesByKey.get(fileKey);
+                imageDebug('bytes-request:received', { requestId, fileKey, hasFile: Boolean(file) });
+
+                if (!requestId || !fileKey || !file) {
+                    parent.postMessage({
+                        pluginMessage: {
+                            type: 'image-bytes-response',
+                            requestId,
+                            fileKey,
+                            ok: false,
+                            error: 'File not found'
+                        }
+                    }, '*');
+                    return;
                 }
-            } else if (msg.type === 'prompt-generated') {
+
+                try {
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    imageDebug('bytes-request:success', { requestId, fileKey, byteLength: bytes.byteLength });
+                    parent.postMessage({
+                        pluginMessage: {
+                            type: 'image-bytes-response',
+                            requestId,
+                            fileKey,
+                            ok: true,
+                            bytes: Array.from(bytes)
+                        }
+                    }, '*');
+                } catch (err) {
+                    imageDebug('bytes-request:failed', { requestId, fileKey });
+                    parent.postMessage({
+                        pluginMessage: {
+                            type: 'image-bytes-response',
+                            requestId,
+                            fileKey,
+                            ok: false,
+                            error: 'Read failed'
+                        }
+                    }, '*');
+                }
+                return;
+            }
+
+            if (msg.type === 'copy-to-clipboard') {
+                lastGeneratedPrompt = typeof msg.text === 'string' ? msg.text : '';
+                generatedPromptTextarea.value = lastGeneratedPrompt;
+                lastGenerateCopySucceeded = await copyText(lastGeneratedPrompt);
+                return;
+            }
+
+            if (msg.type === 'prompt-generated') {
                 extractedData = msg.extractedData;
                 const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
                 const imageCount = typeof msg.imageCount === 'number' ? msg.imageCount : 0;
-                showStatus(`Prompt copied! Found ${textCount} text nodes and ${imageCount} image nodes.`, 'success');
-            } else if (msg.type === 'prompt-error') {
+                if (lastGenerateCopySucceeded) {
+                    showStatus(`Prompt copied! Found ${textCount} text nodes and ${imageCount} image nodes.`, 'success');
+                } else {
+                    showStatus(`Prompt generated (clipboard blocked). Found ${textCount} text nodes and ${imageCount} image nodes. Copy from Generated Prompt box.`, 'info');
+                }
+                return;
+            }
+
+            if (msg.type === 'prompt-error') {
                 showStatus(msg.message, 'error');
-            } else if (msg.type === 'apply-success') {
+                return;
+            }
+
+            if (msg.type === 'apply-success') {
                 const imageReplacedCount = typeof msg.imageReplacedCount === 'number' ? msg.imageReplacedCount : 0;
                 const imageSkippedCount = typeof msg.imageSkippedCount === 'number' ? msg.imageSkippedCount : 0;
+                const imageAmbiguousCount = typeof msg.imageAmbiguousCount === 'number' ? msg.imageAmbiguousCount : 0;
                 const imageFailedCount = typeof msg.imageFailedCount === 'number' ? msg.imageFailedCount : 0;
-                showStatus(`Success! Created ${msg.frameCount} localized frames. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageFailedCount} failed.`, 'success');
-            } else if (msg.type === 'apply-error') {
-                showStatus(msg.message, 'error');
-            } else if (msg.type === 'selection-changed') {
-                const isValid = msg.isValid;
-                const nodeName = msg.nodeName || '';
-                const message = msg.message || '';
+                lastImageIssues = Array.isArray(msg.imageIssues) ? msg.imageIssues : [];
+                updateImageReportState();
+                imageDebug('apply-success', {
+                    frameCount: msg.frameCount,
+                    imageReplacedCount,
+                    imageSkippedCount,
+                    imageAmbiguousCount,
+                    imageFailedCount,
+                    issueCount: lastImageIssues.length
+                });
 
-                // Update indicator
+                showStatus(
+                    `Success! Created ${msg.frameCount} localized frames. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageAmbiguousCount} ambiguous, ${imageFailedCount} failed.`,
+                    'success'
+                );
+                return;
+            }
+
+            if (msg.type === 'apply-error') {
+                showStatus(msg.message, 'error');
+                return;
+            }
+
+            if (msg.type === 'selection-changed') {
+                const isValid = Boolean(msg.isValid);
+                const nodeName = typeof msg.nodeName === 'string' ? msg.nodeName : '';
+                const message = typeof msg.message === 'string' ? msg.message : '';
+
                 if (isValid) {
                     selectionIndicator.classList.add('active');
                     selectionText.textContent = `Selected: ${nodeName}`;
-                    // Enable button
                     generateBtn.disabled = false;
-                    generateBtn.title = "Generate prompt for selected frame";
-                    generateBtn.style.opacity = "1";
-                    generateBtn.style.cursor = "pointer";
+                    generateBtn.title = 'Generate prompt for selected frame';
+                    generateBtn.style.opacity = '1';
+                    generateBtn.style.cursor = 'pointer';
                 } else {
                     selectionIndicator.classList.remove('active');
                     selectionText.textContent = message || 'No frame selected (REQUIRED)';
-                    // Disable button
                     generateBtn.disabled = true;
-                    generateBtn.title = message || "Please select a frame";
-                    generateBtn.style.opacity = "0.5";
-                    generateBtn.style.cursor = "not-allowed";
+                    generateBtn.title = message || 'Please select a frame';
+                    generateBtn.style.opacity = '0.5';
+                    generateBtn.style.cursor = 'not-allowed';
                 }
-            } else if (msg.type === 'load-saved-settings') {
-                // Load saved locales if available
+                return;
+            }
+
+            if (msg.type === 'load-saved-settings') {
                 if (msg.locales !== null && msg.locales !== undefined) {
                     languagesInput.value = msg.locales;
                 }
-                // Load saved prompt if available
+
                 if (msg.prompt !== null && msg.prompt !== undefined) {
                     promptTextarea.value = msg.prompt;
                 }
+
                 imageSourceEnabledInput.checked = Boolean(msg.imageSourceEnabled);
-                if (typeof msg.imageSourceUrl === 'string') {
-                    imageSourceUrlInput.value = msg.imageSourceUrl;
-                }
-                if (typeof msg.imageSourceRootPath === 'string') {
-                    imageSourceRootPathInput.value = msg.imageSourceRootPath;
-                }
                 updateImageSourceFieldsState();
                 updateApplyButtonState();
             }
         };
 
+        updateImageSourceSummary();
         updateImageSourceFieldsState();
         updateApplyButtonState();
+        updateImageReportState();
 
-        // Notify plugin that UI is ready
         parent.postMessage({ pluginMessage: { type: 'ui-ready' } }, '*');
     </script>
 </body>
