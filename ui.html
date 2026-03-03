@@ -638,6 +638,7 @@ Return **only valid JSON**.
     </div>
 
     <script>
+        // Must match code.ts: ALLOWED_IMAGE_EXTENSIONS, MAX_IMAGE_BYTES, MAX_CATALOG_ENTRIES
         const ALLOWED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
         const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
         const MAX_CATALOG_ENTRIES = 5000;
@@ -1373,7 +1374,7 @@ Return **only valid JSON**.
             }
 
             if (msg.type === 'apply-error') {
-                showStatus(msg.message, 'error');
+                showApplyError(msg.message);
                 return;
             }
 
