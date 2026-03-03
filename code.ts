@@ -14,10 +14,20 @@ const IMAGE_ISSUE_CAP = 30;
 const MIN_MATCH_SCORE = 0.6;
 const AMBIGUOUS_MARGIN = 0.04;
 const IMAGE_STOPWORDS = new Set(['img', 'image', 'screen', 'screenshot', 'copy', 'final', 'default']);
-const IMAGE_DEBUG_ENABLED = true;
+const IMAGE_DEBUG_ENABLED = false;
+const PERF_DEBUG_ENABLED = false;
+const IMAGE_PREFETCH_CONCURRENCY = 3;
+const APPLY_YIELD_INTERVAL = 25;
+const TEXT_APPLY_YIELD_INTERVAL = 50;
 
 // Show the UI
 figma.showUI(__html__, { width: 360, height: 620 });
+
+// This avoids traversing hidden instance subtrees during node queries.
+const pluginApiWithSkipInvisible = figma as PluginAPI & { skipInvisibleInstanceChildren?: boolean };
+if (typeof pluginApiWithSkipInvisible.skipInvisibleInstanceChildren === 'boolean') {
+  pluginApiWithSkipInvisible.skipInvisibleInstanceChildren = true;
+}
 
 // Helper to check selection and notify UI
 function checkSelection() {
@@ -76,6 +86,7 @@ interface TextInfo {
 interface ImageInfo {
   id: string;
   nodeName: string;
+  normalizedNodeName: string;
   fillIndex: number;
 }
 
@@ -155,6 +166,17 @@ interface ImageIssue {
   candidates?: MatchCandidateSummary[];
 }
 
+interface ApplyPerfStats {
+  extractionMs: number;
+  localePrepMs: number;
+  textFontLoadMs: number;
+  textApplyMs: number;
+  imageDecisionMs: number;
+  imageFetchMs: number;
+  imageApplyMs: number;
+  totalMs: number;
+}
+
 interface PendingByteRequest {
   resolve: (bytes: Uint8Array | null) => void;
   timeoutId: ReturnType<typeof setTimeout>;
@@ -166,6 +188,34 @@ interface RankedCandidate {
   score: number;
 }
 
+interface BigramProfile {
+  counts: Map<string, number>;
+  total: number;
+}
+
+interface CanonicalNameProfile {
+  canonical: string;
+  tokens: Set<string>;
+  bigrams: BigramProfile;
+}
+
+interface PreparedImageCatalogEntry {
+  entry: ImageCatalogEntry;
+  profile: CanonicalNameProfile;
+  stableIndex: number;
+}
+
+interface ImageReplacementIntent {
+  locale: string;
+  imageInfo: ImageInfo;
+  targetNode: SceneNode & MinimalFillsMixin;
+  fillIndex: number;
+  matchedEntry: ImageCatalogEntry;
+  matchedBestScore?: number;
+  secondBestScore?: number;
+  candidates: MatchCandidateSummary[];
+}
+
 interface MatchDecision {
   status: 'matched' | 'no-candidate' | 'low-confidence' | 'ambiguous';
   best?: RankedCandidate;
@@ -174,6 +224,77 @@ interface MatchDecision {
 }
 
 const pendingByteRequests = new Map<string, PendingByteRequest>();
+const loadedFonts = new Set<string>();
+
+function getFontKey(fontName: FontName): string {
+  return `${fontName.family}::${fontName.style}`;
+}
+
+async function loadFontOnce(fontName: FontName): Promise<void> {
+  const key = getFontKey(fontName);
+  if (loadedFonts.has(key)) {
+    return;
+  }
+  await figma.loadFontAsync(fontName);
+  loadedFonts.add(key);
+}
+
+function nowMs(): number {
+  const perf = (globalThis as unknown as { performance?: { now: () => number } }).performance;
+  if (perf && typeof perf.now === 'function') {
+    return perf.now();
+  }
+  return Date.now();
+}
+
+function perfDebug(message: string, payload?: unknown): void {
+  if (!PERF_DEBUG_ENABLED) {
+    return;
+  }
+
+  if (payload !== undefined) {
+    console.log(`[smartlocal:perf] ${message}`, payload);
+    return;
+  }
+
+  console.log(`[smartlocal:perf] ${message}`);
+}
+
+async function yieldToMainThread(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 0));
+}
+
+async function yieldIfNeeded(counter: number, everyN: number): Promise<void> {
+  if (counter > 0 && counter % everyN === 0) {
+    await yieldToMainThread();
+  }
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) {
+    return;
+  }
+
+  const concurrency = Math.max(1, Math.min(limit, items.length));
+  let cursor = 0;
+
+  const runners = Array.from({ length: concurrency }, async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) {
+        break;
+      }
+      await worker(items[index], index);
+    }
+  });
+
+  await Promise.all(runners);
+}
 
 function imageDebug(message: string, payload?: unknown): void {
   if (!IMAGE_DEBUG_ENABLED) {
@@ -219,13 +340,15 @@ function getContainerWidthPx(textNode: TextNode): number {
   return getRoundedWidthPx(textNode) ?? 1;
 }
 
-// Extract all text nodes from a frame recursively
+// Extract visible text nodes from the subtree.
 function extractTextNodes(node: SceneNode, texts: TextInfo[]): void {
-  if (node.type === 'TEXT') {
-    const textNode = node;
+  const textNodes = 'findAllWithCriteria' in node
+    ? node.findAllWithCriteria({ types: ['TEXT'] })
+    : (node.type === 'TEXT' ? [node] : []);
 
+  for (const textNode of textNodes) {
     if (!textNode.visible) {
-      return;
+      continue;
     }
 
     let lines = 1;
@@ -247,12 +370,6 @@ function extractTextNodes(node: SceneNode, texts: TextInfo[]): void {
       containerWidthPx: getContainerWidthPx(textNode)
     });
   }
-
-  if ('children' in node) {
-    for (const child of node.children) {
-      extractTextNodes(child, texts);
-    }
-  }
 }
 
 // Extract all image nodes from a frame recursively
@@ -268,6 +385,7 @@ function extractImageNodes(node: SceneNode, images: ImageInfo[]): void {
         images.push({
           id: node.id,
           nodeName: node.name,
+          normalizedNodeName: normalizeImageName(node.name),
           fillIndex: index
         });
       }
@@ -345,8 +463,7 @@ function hasFrameAncestor(frame: FrameNode): boolean {
 }
 
 function getArchiveFrames(page: PageNode): FrameNode[] {
-  const allFrames = page.findAll(node => node.type === 'FRAME')
-    .filter((node): node is FrameNode => node.type === 'FRAME');
+  const allFrames = page.findAllWithCriteria({ types: ['FRAME'] });
   const rootFrames = allFrames.filter(frame => !hasFrameAncestor(frame));
 
   rootFrames.sort((a, b) => {
@@ -586,21 +703,19 @@ function tokenizeCanonicalName(value: string): string[] {
     .filter(token => !IMAGE_STOPWORDS.has(token));
 }
 
-function computeTokenDiceScore(tokensA: string[], tokensB: string[]): number {
-  if (tokensA.length === 0 || tokensB.length === 0) {
+function computeTokenDiceScore(tokensA: Set<string>, tokensB: Set<string>): number {
+  if (tokensA.size === 0 || tokensB.size === 0) {
     return 0;
   }
 
-  const setA = new Set(tokensA);
-  const setB = new Set(tokensB);
   let intersectionCount = 0;
-  for (const token of setA) {
-    if (setB.has(token)) {
+  for (const token of tokensA) {
+    if (tokensB.has(token)) {
       intersectionCount++;
     }
   }
 
-  const denominator = setA.size + setB.size;
+  const denominator = tokensA.size + tokensB.size;
   if (denominator === 0) {
     return 0;
   }
@@ -608,91 +723,114 @@ function computeTokenDiceScore(tokensA: string[], tokensB: string[]): number {
   return (2 * intersectionCount) / denominator;
 }
 
-function buildBigramCounts(value: string): Map<string, number> {
+function buildBigramProfile(value: string): BigramProfile {
   const counts = new Map<string, number>();
   if (value.length === 0) {
-    return counts;
+    return { counts, total: 0 };
   }
 
   if (value.length === 1) {
     counts.set(value, 1);
-    return counts;
+    return { counts, total: 1 };
   }
 
+  let total = 0;
   for (let i = 0; i < value.length - 1; i++) {
     const bigram = value.slice(i, i + 2);
     counts.set(bigram, (counts.get(bigram) || 0) + 1);
+    total++;
   }
 
-  return counts;
+  return { counts, total };
 }
 
-function computeBigramDiceScore(valueA: string, valueB: string): number {
-  if (!valueA || !valueB) {
-    return 0;
-  }
-
-  const countsA = buildBigramCounts(valueA);
-  const countsB = buildBigramCounts(valueB);
-
-  let totalA = 0;
-  for (const count of countsA.values()) {
-    totalA += count;
-  }
-
-  let totalB = 0;
-  for (const count of countsB.values()) {
-    totalB += count;
-  }
-
-  if (totalA === 0 || totalB === 0) {
+function computeBigramDiceScore(profileA: BigramProfile, profileB: BigramProfile): number {
+  if (profileA.total === 0 || profileB.total === 0) {
     return 0;
   }
 
   let intersection = 0;
-  for (const [bigram, countA] of countsA.entries()) {
-    const countB = countsB.get(bigram) || 0;
+  for (const [bigram, countA] of profileA.counts.entries()) {
+    const countB = profileB.counts.get(bigram) || 0;
     intersection += Math.min(countA, countB);
   }
 
-  return (2 * intersection) / (totalA + totalB);
+  return (2 * intersection) / (profileA.total + profileB.total);
 }
 
-function scoreImageNameMatch(nodeName: string, filenameStem: string): number {
-  const canonicalNodeName = normalizeImageName(nodeName);
-  const canonicalFilenameStem = normalizeImageName(filenameStem);
+function createCanonicalNameProfile(value: string): CanonicalNameProfile {
+  const canonical = normalizeImageName(value);
+  return {
+    canonical,
+    tokens: new Set(tokenizeCanonicalName(canonical)),
+    bigrams: buildBigramProfile(canonical)
+  };
+}
 
-  if (!canonicalNodeName || !canonicalFilenameStem) {
+function scoreCanonicalNameMatch(nodeProfile: CanonicalNameProfile, candidateProfile: CanonicalNameProfile): number {
+  if (!nodeProfile.canonical || !candidateProfile.canonical) {
     return 0;
   }
 
-  if (canonicalNodeName === canonicalFilenameStem) {
+  if (nodeProfile.canonical === candidateProfile.canonical) {
     return 1;
   }
 
-  const tokenDice = computeTokenDiceScore(
-    tokenizeCanonicalName(canonicalNodeName),
-    tokenizeCanonicalName(canonicalFilenameStem)
-  );
-  const charBigramDice = computeBigramDiceScore(canonicalNodeName, canonicalFilenameStem);
+  const tokenDice = computeTokenDiceScore(nodeProfile.tokens, candidateProfile.tokens);
+  const charBigramDice = computeBigramDiceScore(nodeProfile.bigrams, candidateProfile.bigrams);
   const containsBoost =
-    canonicalNodeName.includes(canonicalFilenameStem) || canonicalFilenameStem.includes(canonicalNodeName)
+    nodeProfile.canonical.includes(candidateProfile.canonical) || candidateProfile.canonical.includes(nodeProfile.canonical)
       ? 0.08
       : 0;
 
   return Math.min(1, (0.55 * tokenDice) + (0.45 * charBigramDice) + containsBoost);
 }
 
-function rankImageCandidates(nodeName: string, candidates: ImageCatalogEntry[]): RankedCandidate[] {
-  return candidates
-    .map(entry => ({
-      entry,
-      score: scoreImageNameMatch(nodeName, entry.stem)
-    }))
-    .sort((a, b) => b.score - a.score);
+function isCandidateBetter(
+  lhs: { score: number; stableIndex: number },
+  rhs: { score: number; stableIndex: number }
+): boolean {
+  if (lhs.score !== rhs.score) {
+    return lhs.score > rhs.score;
+  }
+  return lhs.stableIndex < rhs.stableIndex;
 }
 
-function decideImageCandidate(nodeName: string, candidates: ImageCatalogEntry[]): MatchDecision {
+function rankImageCandidates(nodeProfile: CanonicalNameProfile, candidates: PreparedImageCatalogEntry[]): RankedCandidate[] {
+  const top: Array<{ score: number; stableIndex: number; entry: ImageCatalogEntry }> = [];
+
+  for (const candidate of candidates) {
+    const scored = {
+      entry: candidate.entry,
+      score: scoreCanonicalNameMatch(nodeProfile, candidate.profile),
+      stableIndex: candidate.stableIndex
+    };
+
+    let inserted = false;
+    for (let i = 0; i < top.length; i++) {
+      if (isCandidateBetter(scored, top[i])) {
+        top.splice(i, 0, scored);
+        inserted = true;
+        break;
+      }
+    }
+
+    if (!inserted && top.length < 3) {
+      top.push(scored);
+    }
+
+    if (top.length > 3) {
+      top.pop();
+    }
+  }
+
+  return top.map(item => ({
+    entry: item.entry,
+    score: item.score
+  }));
+}
+
+function decideImageCandidate(nodeProfile: CanonicalNameProfile, candidates: PreparedImageCatalogEntry[]): MatchDecision {
   if (candidates.length === 0) {
     return {
       status: 'no-candidate',
@@ -700,7 +838,7 @@ function decideImageCandidate(nodeName: string, candidates: ImageCatalogEntry[])
     };
   }
 
-  const rankedCandidates = rankImageCandidates(nodeName, candidates);
+  const rankedCandidates = rankImageCandidates(nodeProfile, candidates);
   const best = rankedCandidates[0];
   const second = rankedCandidates[1];
 
@@ -863,10 +1001,11 @@ function requestImageBytesFromUi(fileKey: string): Promise<Uint8Array | null> {
   });
 }
 
-function getLocaleCatalog(catalog: FolderImageCatalog): Map<string, ImageCatalogEntry[]> {
-  const byLocale = new Map<string, ImageCatalogEntry[]>();
+function getLocaleCatalog(catalog: FolderImageCatalog): Map<string, PreparedImageCatalogEntry[]> {
+  const byLocale = new Map<string, PreparedImageCatalogEntry[]>();
 
-  for (const entry of catalog.entries) {
+  for (let i = 0; i < catalog.entries.length; i++) {
+    const entry = catalog.entries[i];
     if (!ALLOWED_IMAGE_EXTENSIONS.has(entry.extension)) {
       continue;
     }
@@ -876,7 +1015,11 @@ function getLocaleCatalog(catalog: FolderImageCatalog): Map<string, ImageCatalog
     }
 
     const localeEntries = byLocale.get(entry.locale) || [];
-    localeEntries.push(entry);
+    localeEntries.push({
+      entry,
+      profile: createCanonicalNameProfile(entry.stem),
+      stableIndex: i
+    });
     byLocale.set(entry.locale, localeEntries);
   }
 
@@ -900,9 +1043,9 @@ function getLanguageBase(locale: string): string {
 }
 
 function getCandidatesForLocale(
-  localeCatalog: Map<string, ImageCatalogEntry[]>,
+  localeCatalog: Map<string, PreparedImageCatalogEntry[]>,
   locale: string
-): ImageCatalogEntry[] {
+): PreparedImageCatalogEntry[] {
   const exact = localeCatalog.get(locale);
   if (exact && exact.length > 0) {
     imageDebug('locale-candidates: exact', { locale, candidateCount: exact.length });
@@ -926,7 +1069,7 @@ function getCandidatesForLocale(
   }
 
   const localeBase = getLanguageBase(locale);
-  const fallback: ImageCatalogEntry[] = [];
+  const fallback: PreparedImageCatalogEntry[] = [];
   for (const [catalogLocale, entries] of localeCatalog.entries()) {
     if (getLanguageBase(catalogLocale) === localeBase) {
       fallback.push(...entries);
@@ -1182,6 +1325,7 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
         isExisting: Boolean(existingNode)
       };
     });
+    const localePlansByLocale = new Map(localePlans.map(plan => [plan.locale, plan]));
 
     const missingNewLocales = localePlans
       .filter(plan => !plan.isExisting && plan.translationCount === 0 && !imageSource.enabled)
@@ -1252,7 +1396,7 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
 
     const imageHashCache = new Map<string, string>();
     const sourceImages: ImageInfo[] = [];
-    const localeCatalog = imageSource.catalog ? getLocaleCatalog(imageSource.catalog) : new Map<string, ImageCatalogEntry[]>();
+    const localeCatalog = imageSource.catalog ? getLocaleCatalog(imageSource.catalog) : new Map<string, PreparedImageCatalogEntry[]>();
 
     if (imageSource.enabled) {
       extractImageNodes(originalFrame, sourceImages);
@@ -1272,7 +1416,7 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
 
     for (let i = 0; i < localesToProcess.length; i++) {
       const locale = localesToProcess[i];
-      const localePlan = localePlans.find(plan => plan.locale === locale);
+      const localePlan = localePlansByLocale.get(locale);
       if (!localePlan) {
         continue;
       }
@@ -1312,11 +1456,11 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
           try {
             const fontName = textNode.fontName;
             if (fontName !== figma.mixed) {
-              await figma.loadFontAsync(fontName);
+              await loadFontOnce(fontName);
             } else {
               const fontNames = textNode.getRangeAllFontNames(0, textNode.characters.length);
               for (const fn of fontNames) {
-                await figma.loadFontAsync(fn);
+                await loadFontOnce(fn);
               }
             }
           } catch (fontErr) {
@@ -1356,7 +1500,7 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
               }
             }
 
-            await figma.loadFontAsync(dominantSegment.fontName);
+            await loadFontOnce(dominantSegment.fontName);
 
             textNode.characters = translatedText;
 
@@ -1438,13 +1582,13 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
               continue;
             }
 
-            const normalizedNodeName = normalizeImageName(imageInfo.nodeName);
-            const matchDecision = decideImageCandidate(normalizedNodeName, localeCandidates);
+            const nodeProfile = createCanonicalNameProfile(imageInfo.nodeName);
+            const matchDecision = decideImageCandidate(nodeProfile, localeCandidates);
             imageDebug('node-match-decision', {
               locale,
               nodeId: imageInfo.id,
               nodeName: imageInfo.nodeName,
-              normalizedNodeName,
+              normalizedNodeName: nodeProfile.canonical,
               status: matchDecision.status,
               bestScore: matchDecision.best ? Number(matchDecision.best.score.toFixed(3)) : null,
               secondScore: matchDecision.second ? Number(matchDecision.second.score.toFixed(3)) : null,
