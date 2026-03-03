@@ -683,7 +683,7 @@ Return **only valid JSON**.
         let lastImageIssues = [];
         let lastGeneratedPrompt = '';
         let lastClipboardCopySucceeded = false;
-        const IMAGE_DEBUG_ENABLED = true;
+        const IMAGE_DEBUG_ENABLED = false;
 
         function imageDebug(message, payload) {
             if (!IMAGE_DEBUG_ENABLED) return;
@@ -1286,7 +1286,7 @@ Return **only valid JSON**.
                             requestId,
                             fileKey,
                             ok: true,
-                            bytes: Array.from(bytes)
+                            bytes
                         }
                     }, '*');
                 } catch (err) {
