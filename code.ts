@@ -14,7 +14,8 @@ const IMAGE_ISSUE_CAP = 30;
 const MIN_MATCH_SCORE = 0.6;
 const AMBIGUOUS_MARGIN = 0.04;
 const IMAGE_STOPWORDS = new Set(['img', 'image', 'screen', 'screenshot', 'copy', 'final', 'default']);
-const IMAGE_DEBUG_ENABLED = true;
+/** Set to true for development debugging. Disable in production to reduce console noise. */
+const IMAGE_DEBUG_ENABLED = false;
 
 // Show the UI
 figma.showUI(__html__, { width: 360, height: 620 });
@@ -219,7 +220,10 @@ function getContainerWidthPx(textNode: TextNode): number {
   return getRoundedWidthPx(textNode) ?? 1;
 }
 
-// Extract all text nodes from a frame recursively
+/**
+ * Recursively extracts visible text nodes from a frame/component, including
+ * charCount, lines, boxWidthPx, and containerWidthPx for AI localization context.
+ */
 function extractTextNodes(node: SceneNode, texts: TextInfo[]): void {
   if (node.type === 'TEXT') {
     const textNode = node;
@@ -255,7 +259,9 @@ function extractTextNodes(node: SceneNode, texts: TextInfo[]): void {
   }
 }
 
-// Extract all image nodes from a frame recursively
+/**
+ * Recursively extracts image fill nodes from a frame for optional localized image replacement.
+ */
 function extractImageNodes(node: SceneNode, images: ImageInfo[]): void {
   if (!node.visible) {
     return;
@@ -315,6 +321,22 @@ function buildNodeMapping(original: SceneNode, cloned: SceneNode, mapping: Map<s
 
 function isLocalizableContainerNode(node: SceneNode): node is LocalizableContainerNode {
   return node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE';
+}
+
+/** Validates current selection and returns the node if valid. Use for generate-prompt and apply-localization. */
+function getValidatedSelection(): { valid: true; node: LocalizableContainerNode } | { valid: false; message: string } {
+  const selection = figma.currentPage.selection;
+  if (selection.length === 0) {
+    return { valid: false, message: 'Please select a frame first' };
+  }
+  if (selection.length > 1) {
+    return { valid: false, message: 'Please select only one frame' };
+  }
+  const node = selection[0];
+  if (!isLocalizableContainerNode(node)) {
+    return { valid: false, message: 'Please select a frame, component, or instance' };
+  }
+  return { valid: true, node };
 }
 
 function getFramePath(frame: FrameNode): string {
@@ -411,6 +433,7 @@ function getNextLocalizedVariantY(originalNode: LocalizableContainerNode, spacin
   return maxBottom + spacing;
 }
 
+/** Returns sanitized nodeId→translatedText map for a locale. Filters non-string values. */
 function getLocaleTranslations(localizations: Localizations, locale: string): Record<string, string> {
   const rawTranslations = localizations[locale];
   if (!rawTranslations || typeof rawTranslations !== 'object') {
@@ -658,6 +681,10 @@ function computeBigramDiceScore(valueA: string, valueB: string): number {
   return (2 * intersection) / (totalA + totalB);
 }
 
+/**
+ * Scores similarity between a Figma node name and a filename stem (0–1).
+ * Uses token Dice coefficient and character bigram Dice for fuzzy matching.
+ */
 function scoreImageNameMatch(nodeName: string, filenameStem: string): number {
   const canonicalNodeName = normalizeImageName(nodeName);
   const canonicalFilenameStem = normalizeImageName(filenameStem);
@@ -692,6 +719,10 @@ function rankImageCandidates(nodeName: string, candidates: ImageCatalogEntry[]):
     .sort((a, b) => b.score - a.score);
 }
 
+/**
+ * Picks best image candidate or returns status: no-candidate, low-confidence, ambiguous, or matched.
+ * Uses MIN_MATCH_SCORE and AMBIGUOUS_MARGIN thresholds.
+ */
 function decideImageCandidate(nodeName: string, candidates: ImageCatalogEntry[]): MatchDecision {
   if (candidates.length === 0) {
     return {
@@ -942,7 +973,11 @@ function getCandidatesForLocale(
   return fallback;
 }
 
-// Handle messages from UI
+/**
+ * Message handler for UI ↔ plugin communication.
+ * Handled types: image-bytes-response, ui-ready, generate-prompt, extract-all-frames-content,
+ * apply-localization, save-locales, save-prompt, save-image-source.
+ */
 figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
   if (msg.type === 'image-bytes-response') {
     handleImageBytesResponse(msg as Record<string, unknown>);
@@ -972,35 +1007,14 @@ figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
 
   // Generate Prompt
   if (msg.type === 'generate-prompt') {
-    const selection = figma.currentPage.selection;
-
-    if (selection.length === 0) {
-      figma.ui.postMessage({
-        type: 'prompt-error',
-        message: 'Please select a frame first'
-      });
-      return;
-    }
-
-    if (selection.length > 1) {
-      figma.ui.postMessage({
-        type: 'prompt-error',
-        message: 'Please select only one frame'
-      });
-      return;
-    }
-
-    const selectedNode = selection[0];
-    if (selectedNode.type !== 'FRAME' && selectedNode.type !== 'COMPONENT' && selectedNode.type !== 'INSTANCE') {
-      figma.ui.postMessage({
-        type: 'prompt-error',
-        message: 'Please select a frame, component, or instance'
-      });
+    const validation = getValidatedSelection();
+    if (!validation.valid) {
+      figma.ui.postMessage({ type: 'prompt-error', message: validation.message });
       return;
     }
 
     const texts: TextInfo[] = [];
-    extractTextNodes(selectedNode, texts);
+    extractTextNodes(validation.node, texts);
 
     if (texts.length === 0) {
       figma.ui.postMessage({
@@ -1114,26 +1128,16 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
 
   // Apply Localization
   if (msg.type === 'apply-localization') {
-    const selection = figma.currentPage.selection;
-
-    if (selection.length === 0) {
-      figma.ui.postMessage({
-        type: 'apply-error',
-        message: 'Please select the original frame'
-      });
+    const validation = getValidatedSelection();
+    if (!validation.valid) {
+      const message = validation.message === 'Please select a frame first'
+        ? 'Please select the original frame'
+        : validation.message;
+      figma.ui.postMessage({ type: 'apply-error', message });
       return;
     }
 
-    const selectedNode = selection[0];
-    if (selectedNode.type !== 'FRAME' && selectedNode.type !== 'COMPONENT' && selectedNode.type !== 'INSTANCE') {
-      figma.ui.postMessage({
-        type: 'apply-error',
-        message: 'Please select a frame, component, or instance'
-      });
-      return;
-    }
-
-    const originalFrame = selectedNode as LocalizableContainerNode;
+    const originalFrame = validation.node;
     const localizations = (msg.localizations && typeof msg.localizations === 'object' && !Array.isArray(msg.localizations))
       ? msg.localizations as Localizations
       : {};
@@ -1661,5 +1665,6 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     } catch (err) {
       console.warn('Failed to save image source settings:', err);
     }
+    return;
   }
 };
