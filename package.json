@@ -7,7 +7,7 @@
     "build": "node scripts/build_ui.js && tsc",
     "lint": "eslint --ext .ts,.tsx --ignore-pattern node_modules .",
     "lint:fix": "eslint --ext .ts,.tsx --ignore-pattern node_modules --fix .",
-    "watch": "npm run build -- --watch"
+    "watch": "node scripts/watch.js"
   },
   "author": "",
   "license": "",
