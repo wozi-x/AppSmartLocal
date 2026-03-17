@@ -239,6 +239,35 @@
             align-items: center;
         }
 
+        .step-strip {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .step-pill {
+            border-radius: 999px;
+            border: 1px solid #D8D8D8;
+            background: #F6F6F6;
+            color: #666;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            padding: 4px 8px;
+        }
+
+        .step-pill.active {
+            background: #EAF4FC;
+            border-color: #B9DDF5;
+            color: #0A6FB6;
+        }
+
+        .step-pill.complete {
+            background: #EAF7EF;
+            border-color: #BCE5CF;
+            color: #147148;
+        }
+
         /* Status Notifications */
         .status {
             position: fixed;
@@ -369,6 +398,31 @@
         .hidden-input {
             display: none;
         }
+
+        .share-note,
+        .review-details {
+            font-size: 10px;
+            line-height: 1.5;
+            color: #666;
+            white-space: pre-wrap;
+        }
+
+        .review-details {
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            background: #FFF;
+            padding: var(--spacing-sm);
+            min-height: 72px;
+        }
+
+        .button-row {
+            display: flex;
+            gap: var(--spacing-sm);
+        }
+
+        .button-row .btn {
+            flex: 1;
+        }
     </style>
 </head>
 
@@ -382,6 +436,13 @@
         <div id="selection-indicator" class="selection-indicator">
             <span id="selection-icon" class="icon">⬜</span>
             <span id="selection-text">No frame selected (REQUIRED)</span>
+        </div>
+
+        <div class="step-strip" aria-label="SmartLocal workflow steps">
+            <span id="step-select" class="step-pill">1 Select</span>
+            <span id="step-generate" class="step-pill">2 Generate</span>
+            <span id="step-validate" class="step-pill">3 Validate</span>
+            <span id="step-apply" class="step-pill">4 Apply</span>
         </div>
 
         <div class="flow-card">
@@ -407,6 +468,8 @@
             <button id="generate" class="btn btn-primary">
                 <span class="icon-text">📋</span> Generate & Copy Prompt
             </button>
+
+            <div class="share-note">What gets shared externally: only the prompt text you copy here, and only after you paste it into ChatGPT, Claude, or another tool.</div>
 
             <div class="section-tight">
                 <label class="label" for="generated-prompt">Generated Prompt</label>
@@ -437,6 +500,26 @@
             <div class="section-tight">
                 <label class="label" for="response">Paste AI Response JSON</label>
                 <textarea id="response" placeholder='{ "localizations": { "es": { ... } } }'></textarea>
+            </div>
+
+            <div class="flow-card" style="background:#FFF;">
+                <div class="flow-header">
+                    <span class="flow-step">Step 3</span>
+                    <span class="flow-title">Validate & Review</span>
+                </div>
+                <div id="review-summary" class="hint">Validate the current response to review locale coverage, create/update behavior, and any blocking issues before Apply.</div>
+                <div id="review-details" class="review-details">Validation report will appear here.</div>
+                <div class="button-row">
+                    <button id="validate" class="btn btn-secondary" type="button">
+                        <span class="icon-text">🔎</span> Validate JSON
+                    </button>
+                    <button id="copy-validation-report" class="btn btn-secondary" type="button">
+                        <span class="icon-text">📄</span> Copy Validation Report
+                    </button>
+                    <button id="copy-apply-report" class="btn btn-secondary" type="button">
+                        <span class="icon-text">🧾</span> Copy Apply Report
+                    </button>
+                </div>
             </div>
 
             <div class="flow-card" style="background:#FFF; border-style:dashed;">
@@ -473,9 +556,11 @@
 
             <div class="section">
                 <div id="apply-error" class="error-message"></div>
-                <button id="apply" class="btn btn-success">
-                    <span class="icon-text">✨</span> Apply Localization
-                </button>
+                <div class="button-row">
+                    <button id="apply" class="btn btn-success">
+                        <span class="icon-text">✨</span> Apply Localization
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -487,7 +572,6 @@
     </div>
 
     <script>
-        // Must match code.ts: ALLOWED_IMAGE_EXTENSIONS, MAX_IMAGE_BYTES, MAX_CATALOG_ENTRIES
         const ALLOWED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
         const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
         const MAX_CATALOG_ENTRIES = 5000;
@@ -506,21 +590,20 @@
         const generatedPromptTextarea = document.getElementById('generated-prompt');
         const copyGeneratedPromptBtn = document.getElementById('copy-generated-prompt');
         const extractAllFramesContentBtn = document.getElementById('extract-all-frames-content');
+        const validateBtn = document.getElementById('validate');
         const applyBtn = document.getElementById('apply');
+        const copyValidationReportBtn = document.getElementById('copy-validation-report');
+        const copyApplyReportBtn = document.getElementById('copy-apply-report');
+        const reviewSummary = document.getElementById('review-summary');
+        const reviewDetails = document.getElementById('review-details');
         const statusDiv = document.getElementById('status');
         const selectionIndicator = document.getElementById('selection-indicator');
         const selectionText = document.getElementById('selection-text');
         const applyError = document.getElementById('apply-error');
-
-        generateBtn.disabled = true;
-        generateBtn.title = 'Please select a frame to generate prompt';
-        generateBtn.style.opacity = '0.5';
-        generateBtn.style.cursor = 'not-allowed';
-
-        applyBtn.disabled = true;
-        applyBtn.style.opacity = '0.5';
-        applyBtn.style.cursor = 'not-allowed';
-        applyBtn.title = 'Paste response JSON or enable image replacement';
+        const stepSelect = document.getElementById('step-select');
+        const stepGenerate = document.getElementById('step-generate');
+        const stepValidate = document.getElementById('step-validate');
+        const stepApply = document.getElementById('step-apply');
 
         let extractedData = null;
         let statusTimeout = null;
@@ -533,6 +616,16 @@
         let lastImageIssues = [];
         let lastGeneratedPrompt = '';
         let lastClipboardCopySucceeded = false;
+        let isSelectionValid = false;
+        let isApplying = false;
+        let lastValidationResult = null;
+        let lastValidationReport = null;
+        let lastValidationSignature = '';
+        let pendingValidationSignature = '';
+        let lastPreparedRequest = null;
+        let pendingPreparedRequest = null;
+        let lastApplyResult = null;
+        let lastApplyReport = null;
         const IMAGE_DEBUG_ENABLED = false;
 
         function imageDebug(message, payload) {
@@ -697,35 +790,92 @@
             return Boolean(imageSourceEnabledInput.checked);
         }
 
+        function hasReadyImageCatalog() {
+            return Boolean(imageCatalog && imageCatalog.entries && imageCatalog.entries.length > 0);
+        }
+
+        function hasReadyInput() {
+            const hasResponse = responseTextarea.value.trim().length > 0;
+            return hasResponse || (isImageSourceEnabled() && hasReadyImageCatalog());
+        }
+
+        function getCurrentValidationSignature() {
+            return JSON.stringify({
+                selection: isSelectionValid ? selectionText.textContent : '',
+                languages: languagesInput.value.trim(),
+                response: responseTextarea.value.trim(),
+                imageSourceEnabled: isImageSourceEnabled(),
+                imageCatalogCount: hasReadyImageCatalog() ? imageCatalog.entries.length : 0
+            });
+        }
+
+        function validationIsFresh() {
+            return Boolean(lastValidationResult) && lastValidationSignature === getCurrentValidationSignature();
+        }
+
         function updateImageSourceSummary() {
             imageSourceSummary.textContent = imageCatalogSummary;
         }
 
         function updateImageSourceFieldsState() {
-            const enabled = isImageSourceEnabled();
-            imageSourceFields.classList.toggle('disabled', !enabled);
+            imageSourceFields.classList.toggle('disabled', !isImageSourceEnabled());
         }
 
         function updateImageReportState() {
             imageReportSection.style.display = lastImageIssues.length > 0 ? 'flex' : 'none';
         }
 
-        function updateApplyButtonState() {
-            const hasResponse = responseTextarea.value.trim().length > 0;
-            const imageModeReady = isImageSourceEnabled() && imageCatalog && imageCatalog.entries && imageCatalog.entries.length > 0;
-            const canApply = hasResponse || imageModeReady;
-
-            applyBtn.disabled = !canApply;
-            applyBtn.style.opacity = canApply ? '1' : '0.5';
-            applyBtn.style.cursor = canApply ? 'pointer' : 'not-allowed';
-
-            if (canApply) {
-                applyBtn.title = 'Apply localization';
-            } else if (isImageSourceEnabled() && !imageCatalog) {
-                applyBtn.title = 'Choose assets folder for image replacement';
-            } else {
-                applyBtn.title = 'Paste AI response JSON or enable image replacement';
+        function setStepState(element, state) {
+            element.classList.remove('active', 'complete');
+            if (state) {
+                element.classList.add(state);
             }
+        }
+
+        function updateStepIndicator() {
+            setStepState(stepSelect, isSelectionValid ? 'complete' : '');
+            setStepState(stepGenerate, lastGeneratedPrompt ? 'complete' : (isSelectionValid ? 'active' : ''));
+            setStepState(stepValidate, validationIsFresh() ? 'complete' : (hasReadyInput() && isSelectionValid ? 'active' : ''));
+            setStepState(stepApply, isApplying ? 'active' : (lastApplyResult ? 'complete' : ''));
+        }
+
+        function formatButtonState(button, enabled, title) {
+            button.disabled = !enabled;
+            button.style.opacity = enabled ? '1' : '0.5';
+            button.style.cursor = enabled ? 'pointer' : 'not-allowed';
+            button.title = title;
+        }
+
+        function updateActionButtons() {
+            const readyInput = hasReadyInput();
+            const freshValidation = validationIsFresh();
+            const canValidate = isSelectionValid && readyInput && !isApplying;
+            let applyTitle = 'Validate the current response before applying';
+            let canApply = false;
+
+            if (!isSelectionValid) {
+                applyTitle = 'Select a frame, component, or instance first';
+            } else if (!readyInput) {
+                applyTitle = isImageSourceEnabled()
+                    ? 'Paste AI response JSON or choose a localized assets folder'
+                    : 'Paste AI response JSON or enable image replacement';
+            } else if (!lastValidationResult) {
+                applyTitle = 'Validate the current response before applying';
+            } else if (!freshValidation) {
+                applyTitle = 'Inputs changed after validation. Validate again before applying';
+            } else if (!lastValidationResult.canApply) {
+                applyTitle = 'Resolve validation issues before applying';
+            } else if (isApplying) {
+                applyTitle = 'Localization is currently running';
+            } else {
+                canApply = true;
+                applyTitle = 'Apply localization';
+            }
+
+            formatButtonState(validateBtn, canValidate, canValidate ? 'Validate response and review changes' : 'Enter response data and select a frame first');
+            formatButtonState(applyBtn, canApply, applyTitle);
+            formatButtonState(copyValidationReportBtn, Boolean(lastValidationReport), lastValidationReport ? 'Copy validation report' : 'Validate first to generate a report');
+            formatButtonState(copyApplyReportBtn, Boolean(lastApplyReport), lastApplyReport ? 'Copy apply report' : 'Apply localization to generate a report');
         }
 
         function saveImageSource() {
@@ -750,7 +900,6 @@
 
             statusDiv.textContent = message;
             statusDiv.className = `status show ${type}`;
-
             statusTimeout = setTimeout(() => {
                 hideStatus();
             }, 5000);
@@ -816,9 +965,9 @@
                     skippedNoLocale++;
                     continue;
                 }
+
                 const locale = pathSegments[localeIndex].trim();
                 const relPathFromLocale = pathSegments.slice(localeIndex).join('/');
-
                 const filename = pathSegments[pathSegments.length - 1];
                 const extMatch = filename.match(/\.([^.]+)$/);
                 if (!extMatch) {
@@ -869,10 +1018,6 @@
             }
 
             if (exceededLimit) {
-                imageDebug('catalog-build:limit-exceeded', {
-                    validEntryCount: entries.length,
-                    max: MAX_CATALOG_ENTRIES
-                });
                 return {
                     catalog: null,
                     fileMap,
@@ -882,11 +1027,6 @@
             }
 
             if (entries.length === 0) {
-                imageDebug('catalog-build:no-valid-entries', {
-                    skippedUnsupported,
-                    skippedOversized,
-                    skippedNoLocale
-                });
                 return {
                     catalog: null,
                     fileMap: new Map(),
@@ -895,17 +1035,6 @@
                 };
             }
 
-            const now = new Date();
-            const summary = `Loaded ${entries.length} images across ${locales.size} locales at ${now.toLocaleTimeString()}. Skipped ${skippedUnsupported} unsupported, ${skippedOversized} oversized, ${skippedNoLocale} missing-locale files.`;
-            imageDebug('catalog-build:done', {
-                entries: entries.length,
-                localeCount: locales.size,
-                skippedUnsupported,
-                skippedOversized,
-                skippedNoLocale,
-                sampleLocaleMappings
-            });
-
             return {
                 catalog: {
                     version: 1,
@@ -913,7 +1042,7 @@
                     entries
                 },
                 fileMap,
-                summary,
+                summary: `Loaded ${entries.length} images across ${locales.size} locales at ${new Date().toLocaleTimeString()}. Skipped ${skippedUnsupported} unsupported, ${skippedOversized} oversized, ${skippedNoLocale} missing-locale files.`,
                 error: null
             };
         }
@@ -937,18 +1066,144 @@
             }
         }
 
-        languagesInput.addEventListener('input', saveLocales);
+        function invalidateValidation() {
+            lastValidationResult = null;
+            lastValidationReport = null;
+            lastValidationSignature = '';
+            lastPreparedRequest = null;
+            updateActionButtons();
+            renderReviewState();
+            updateStepIndicator();
+        }
+
+        function prepareRequestPayload() {
+            if (!isSelectionValid) {
+                return { ok: false, message: 'Select a frame, component, or instance first.' };
+            }
+
+            const responseText = responseTextarea.value.trim();
+            const imageSourceEnabled = isImageSourceEnabled();
+            const hasResponse = responseText.length > 0;
+            if (!hasResponse && !imageSourceEnabled) {
+                return { ok: false, message: 'Paste AI response JSON or enable image replacement.' };
+            }
+
+            if (imageSourceEnabled && !hasReadyImageCatalog()) {
+                return { ok: false, message: 'Choose a localized assets folder before continuing.' };
+            }
+
+            const languages = getTargetLanguages();
+            if (languages.length === 0) {
+                return { ok: false, message: 'Please enter at least one target language.' };
+            }
+
+            let localizations = {};
+            if (hasResponse) {
+                let response;
+                try {
+                    response = JSON.parse(responseText);
+                } catch (err) {
+                    return { ok: false, message: 'Invalid JSON format. Fix the response before validating or applying.' };
+                }
+
+                if (!response.localizations || typeof response.localizations !== 'object') {
+                    const extractedLocalizations = extractLocalizationsFromResponse(response);
+                    if (extractedLocalizations) {
+                        localizations = extractedLocalizations;
+                    } else if (!imageSourceEnabled) {
+                        return { ok: false, message: 'Could not find localizations. Use {"localizations": {...}} or a locale map like {"de-DE": {...}}.' };
+                    }
+                } else {
+                    localizations = response.localizations;
+                }
+            }
+
+            return {
+                ok: true,
+                languages,
+                localizations,
+                imageSource: {
+                    enabled: imageSourceEnabled,
+                    mode: 'folder',
+                    catalog: imageSourceEnabled ? imageCatalog : null
+                }
+            };
+        }
+
+        function buildValidationReport(validation) {
+            return {
+                generatedAt: new Date().toISOString(),
+                validation
+            };
+        }
+
+        function buildApplyReport(result) {
+            return {
+                generatedAt: new Date().toISOString(),
+                result
+            };
+        }
+
+        function renderReviewState() {
+            if (!lastValidationResult) {
+                reviewSummary.textContent = 'Validate the current response to review locale coverage, create/update behavior, and any blocking issues before Apply.';
+                reviewDetails.textContent = lastApplyResult
+                    ? `Last apply run:\n${lastApplyResult.localeOutcomes.map(outcome => `${outcome.locale}: ${outcome.status}, text ${outcome.textAppliedCount}/${outcome.textAppliedCount + outcome.textFailedCount}, images replaced ${outcome.imageReplacedCount}`).join('\n')}`
+                    : 'Validation report will appear here.';
+                return;
+            }
+
+            const validation = lastValidationResult;
+            const summary = validation.summary;
+            const stateLabel = validation.canApply ? (validationIsFresh() ? 'Ready to apply.' : 'Validation is stale. Revalidate before applying.') : 'Validation found blocking issues.';
+            reviewSummary.textContent = `${stateLabel} ${summary.creatableCount} create, ${summary.updatableCount} update, ${summary.blockedCount} blocked.`;
+
+            const localeLines = validation.locales.map(locale => {
+                const messages = locale.issues.map(issue => issue.message).join(' | ');
+                const issueText = messages ? ` | ${messages}` : '';
+                return `${locale.locale}: ${locale.mode}, ${locale.translationCount} translations, ${locale.willApplyImages ? 'images on' : 'images off'}, ${locale.canApply ? 'ready' : 'blocked'}${issueText}`;
+            });
+
+            const applyLines = lastApplyResult
+                ? [
+                    '',
+                    `Last apply: ${lastApplyResult.status}. ${lastApplyResult.createdCount} created, ${lastApplyResult.updatedCount} updated.`,
+                    ...lastApplyResult.localeOutcomes.map(outcome => `${outcome.locale}: ${outcome.status}, text ${outcome.textAppliedCount}/${outcome.textAppliedCount + outcome.textFailedCount}, images ${outcome.imageReplacedCount} replaced, ${outcome.imageSkippedCount} skipped, ${outcome.imageFailedCount} failed`)
+                ]
+                : [];
+
+            reviewDetails.textContent = [
+                `Selection: ${validation.selectionName}`,
+                `Source: ${summary.sourceTextCount} text nodes, ${summary.sourceImageCount} image nodes`,
+                `Requested locales: ${validation.requestedLocales.join(', ') || 'None'}`,
+                `Response locales: ${validation.responseLocales.join(', ') || 'None'}`,
+                ...localeLines,
+                ...applyLines
+            ].join('\n');
+        }
+
+        function setApplyingState(nextValue) {
+            isApplying = nextValue;
+            updateActionButtons();
+            updateStepIndicator();
+        }
+
+        languagesInput.addEventListener('input', () => {
+            saveLocales();
+            invalidateValidation();
+        });
+
         promptTextarea.addEventListener('input', savePrompt);
 
         responseTextarea.addEventListener('input', () => {
-            updateApplyButtonState();
+            invalidateValidation();
             if (responseTextarea.value.trim().length > 0) hideStatus();
         });
 
         imageSourceEnabledInput.addEventListener('change', () => {
             updateImageSourceFieldsState();
-            updateApplyButtonState();
             saveImageSource();
+            invalidateValidation();
         });
 
         chooseAssetsFolderBtn.addEventListener('click', () => {
@@ -958,7 +1213,6 @@
         imageSourceFolderInput.addEventListener('change', () => {
             const files = Array.from(imageSourceFolderInput.files || []);
             if (files.length === 0) {
-                imageDebug('folder-select:empty-selection');
                 return;
             }
 
@@ -967,15 +1221,11 @@
             setImageFilesMap(result.fileMap);
             imageCatalogSummary = result.summary;
             updateImageSourceSummary();
-            updateApplyButtonState();
+            invalidateValidation();
 
             if (result.error) {
-                imageDebug('folder-select:error', { error: result.error });
                 showApplyError(result.error);
             } else {
-                imageDebug('folder-select:ready', {
-                    entries: imageCatalog.entries.length
-                });
                 hideStatus();
                 showStatus(`Assets loaded: ${imageCatalog.entries.length} files ready for matching.`, 'success');
             }
@@ -987,13 +1237,12 @@
                 return;
             }
 
-            const report = {
+            const copied = await copyText(JSON.stringify({
                 generatedAt: new Date().toISOString(),
                 issueCount: lastImageIssues.length,
                 issues: lastImageIssues
-            };
-            await copyText(JSON.stringify(report, null, 2));
-            showStatus('Image mismatch report copied.', 'success');
+            }, null, 2));
+            showStatus(copied ? 'Image mismatch report copied.' : 'Clipboard blocked. Copy manually from the review report.', copied ? 'success' : 'error');
         });
 
         copyGeneratedPromptBtn.addEventListener('click', async () => {
@@ -1003,20 +1252,35 @@
             }
 
             const copied = await copyText(lastGeneratedPrompt);
-            if (copied) {
-                showStatus('Generated prompt copied.', 'success');
-            } else {
-                showStatus('Clipboard blocked. Copy manually from the Generated Prompt box.', 'error');
+            showStatus(copied ? 'Generated prompt copied.' : 'Clipboard blocked. Copy manually from the Generated Prompt box.', copied ? 'success' : 'error');
+        });
+
+        copyValidationReportBtn.addEventListener('click', async () => {
+            if (!lastValidationReport) {
+                showStatus('Validate the response first to create a report.', 'info');
+                return;
             }
+
+            const copied = await copyText(JSON.stringify(lastValidationReport, null, 2));
+            showStatus(copied ? 'Validation report copied.' : 'Clipboard blocked. Copy manually from the review panel.', copied ? 'success' : 'error');
+        });
+
+        copyApplyReportBtn.addEventListener('click', async () => {
+            if (!lastApplyReport) {
+                showStatus('Apply localization first to create a report.', 'info');
+                return;
+            }
+
+            const copied = await copyText(JSON.stringify(lastApplyReport, null, 2));
+            showStatus(copied ? 'Apply report copied.' : 'Clipboard blocked. Copy manually from the review panel.', copied ? 'success' : 'error');
         });
 
         extractAllFramesContentBtn.addEventListener('click', () => {
             hideStatus();
-            const languages = getTargetLanguages();
             parent.postMessage({
                 pluginMessage: {
                     type: 'extract-all-frames-content',
-                    languages
+                    languages: getTargetLanguages()
                 }
             }, '*');
         });
@@ -1038,70 +1302,44 @@
             }, '*');
         };
 
-        applyBtn.onclick = () => {
-            const responseText = responseTextarea.value.trim();
-            const imageSourceEnabled = isImageSourceEnabled();
-            const hasResponse = responseText.length > 0;
-
-            if (!hasResponse && !imageSourceEnabled) {
-                showApplyError('Please paste AI response JSON or enable image replacement.');
-                return;
-            }
-
-            if (imageSourceEnabled && (!imageCatalog || !imageCatalog.entries || imageCatalog.entries.length === 0)) {
-                showApplyError('Choose a localized assets folder before applying image replacement.');
+        validateBtn.onclick = () => {
+            const prepared = prepareRequestPayload();
+            if (!prepared.ok) {
+                showApplyError(prepared.message);
                 return;
             }
 
             hideStatus();
+            pendingPreparedRequest = prepared;
+            pendingValidationSignature = getCurrentValidationSignature();
+            parent.postMessage({
+                pluginMessage: {
+                    type: 'validate-localization',
+                    localizations: prepared.localizations,
+                    locales: prepared.languages,
+                    imageSource: prepared.imageSource
+                }
+            }, '*');
+            showStatus('Validation started. Reviewing locale coverage and variant safety…', 'info');
+        };
 
-            const languages = getTargetLanguages();
-            if (languages.length === 0) {
-                showApplyError('Please enter at least one target language');
+        applyBtn.onclick = () => {
+            if (!validationIsFresh() || !lastValidationResult || !lastValidationResult.canApply || !lastPreparedRequest) {
+                showApplyError('Validate the current response and resolve any issues before applying.');
                 return;
             }
 
-            let localizations = {};
-            if (hasResponse) {
-                let response;
-                try {
-                    response = JSON.parse(responseText);
-                } catch (err) {
-                    showApplyError('Invalid JSON format. Please check the response or generate a new one.');
-                    return;
-                }
-
-                if (!response.localizations || typeof response.localizations !== 'object') {
-                    const extractedLocalizations = extractLocalizationsFromResponse(response);
-                    if (extractedLocalizations) {
-                        localizations = extractedLocalizations;
-                    } else if (!imageSourceEnabled) {
-                        showApplyError('Could not find localizations. Use {"localizations": {...}} or a locale map like {"de-DE": {...}}.');
-                        return;
-                    }
-                } else {
-                    localizations = response.localizations;
-                }
-            }
-
+            hideStatus();
+            setApplyingState(true);
             parent.postMessage({
                 pluginMessage: {
                     type: 'apply-localization',
-                    localizations,
-                    locales: languages,
-                    imageSource: {
-                        enabled: imageSourceEnabled,
-                        mode: 'folder',
-                        catalog: imageSourceEnabled ? imageCatalog : null
-                    }
+                    localizations: lastPreparedRequest.localizations,
+                    locales: lastPreparedRequest.languages,
+                    imageSource: lastPreparedRequest.imageSource
                 }
             }, '*');
-            imageDebug('apply-sent', {
-                locales: languages,
-                hasResponse,
-                imageSourceEnabled,
-                catalogEntries: imageSourceEnabled && imageCatalog ? imageCatalog.entries.length : 0
-            });
+            showStatus('Applying localization…', 'info');
         };
 
         window.onmessage = async (event) => {
@@ -1112,7 +1350,6 @@
                 const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
                 const fileKey = typeof msg.fileKey === 'string' ? msg.fileKey : '';
                 const file = imageFilesByKey.get(fileKey);
-                imageDebug('bytes-request:received', { requestId, fileKey, hasFile: Boolean(file) });
 
                 if (!requestId || !fileKey || !file) {
                     parent.postMessage({
@@ -1129,7 +1366,6 @@
 
                 try {
                     const bytes = new Uint8Array(await file.arrayBuffer());
-                    imageDebug('bytes-request:success', { requestId, fileKey, byteLength: bytes.byteLength });
                     parent.postMessage({
                         pluginMessage: {
                             type: 'image-bytes-response',
@@ -1140,7 +1376,6 @@
                         }
                     }, '*');
                 } catch (err) {
-                    imageDebug('bytes-request:failed', { requestId, fileKey });
                     parent.postMessage({
                         pluginMessage: {
                             type: 'image-bytes-response',
@@ -1155,20 +1390,23 @@
             }
 
             if (msg.type === 'copy-to-clipboard') {
-                lastGeneratedPrompt = typeof msg.text === 'string' ? msg.text : '';
-                generatedPromptTextarea.value = lastGeneratedPrompt;
-                lastClipboardCopySucceeded = await copyText(lastGeneratedPrompt);
+                const copiedText = typeof msg.text === 'string' ? msg.text : '';
+                lastGeneratedPrompt = copiedText;
+                generatedPromptTextarea.value = copiedText;
+                lastClipboardCopySucceeded = await copyText(copiedText);
                 return;
             }
 
             if (msg.type === 'prompt-generated') {
                 extractedData = msg.extractedData;
                 const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
-                if (lastClipboardCopySucceeded) {
-                    showStatus(`Prompt copied! Found ${textCount} text nodes.`, 'success');
-                } else {
-                    showStatus(`Prompt generated (clipboard blocked). Found ${textCount} text nodes. Copy from Generated Prompt box.`, 'info');
-                }
+                showStatus(
+                    lastClipboardCopySucceeded
+                        ? `Prompt copied! Found ${textCount} text nodes.`
+                        : `Prompt generated (clipboard blocked). Found ${textCount} text nodes. Copy from Generated Prompt box.`,
+                    lastClipboardCopySucceeded ? 'success' : 'info'
+                );
+                updateStepIndicator();
                 return;
             }
 
@@ -1176,77 +1414,93 @@
                 extractedData = msg.archiveData || null;
                 const frameCount = typeof msg.frameCount === 'number' ? msg.frameCount : 0;
                 const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
-                if (lastClipboardCopySucceeded) {
-                    showStatus(`Archive copied! ${frameCount} frames, ${textCount} text nodes. Translate it, then apply JSON with localizations.`, 'success');
+                showStatus(
+                    lastClipboardCopySucceeded
+                        ? `Archive copied! ${frameCount} frames, ${textCount} text nodes. Translate it, then validate before applying.`
+                        : `Archive generated for ${frameCount} frames (clipboard blocked). Copy from Generated Prompt box.`,
+                    lastClipboardCopySucceeded ? 'success' : 'info'
+                );
+                return;
+            }
+
+            if (msg.type === 'all-frames-content-error' || msg.type === 'prompt-error') {
+                showStatus(msg.message, 'error');
+                return;
+            }
+
+            if (msg.type === 'validation-result') {
+                lastValidationResult = msg.validation || null;
+                lastValidationReport = buildValidationReport(lastValidationResult);
+                lastValidationSignature = pendingValidationSignature;
+                lastPreparedRequest = pendingPreparedRequest;
+                renderReviewState();
+                updateActionButtons();
+                updateStepIndicator();
+
+                if (lastValidationResult.canApply) {
+                    showStatus(
+                        lastValidationResult.partialIssues
+                            ? 'Validation passed with warnings. Review the report before applying.'
+                            : 'Validation passed. Review the summary, then apply when ready.',
+                        lastValidationResult.partialIssues ? 'info' : 'success'
+                    );
                 } else {
-                    showStatus(`Archive generated for ${frameCount} frames (clipboard blocked). Copy from Generated Prompt box.`, 'info');
+                    showStatus('Validation found blocking issues. Review the summary before applying.', 'error');
                 }
                 return;
             }
 
-            if (msg.type === 'all-frames-content-error') {
-                showStatus(msg.message, 'error');
+            if (msg.type === 'validation-error') {
+                showApplyError(msg.message);
                 return;
             }
 
-            if (msg.type === 'prompt-error') {
-                showStatus(msg.message, 'error');
-                return;
-            }
-
-            if (msg.type === 'apply-success') {
-                const createdCount = typeof msg.createdCount === 'number'
-                    ? msg.createdCount
-                    : (typeof msg.frameCount === 'number' ? msg.frameCount : 0);
-                const updatedCount = typeof msg.updatedCount === 'number' ? msg.updatedCount : 0;
-                const imageReplacedCount = typeof msg.imageReplacedCount === 'number' ? msg.imageReplacedCount : 0;
-                const imageSkippedCount = typeof msg.imageSkippedCount === 'number' ? msg.imageSkippedCount : 0;
-                const imageAmbiguousCount = typeof msg.imageAmbiguousCount === 'number' ? msg.imageAmbiguousCount : 0;
-                const imageFailedCount = typeof msg.imageFailedCount === 'number' ? msg.imageFailedCount : 0;
-                lastImageIssues = Array.isArray(msg.imageIssues) ? msg.imageIssues : [];
+            if (msg.type === 'apply-result') {
+                setApplyingState(false);
+                lastApplyResult = msg.result || null;
+                lastApplyReport = buildApplyReport(lastApplyResult);
+                lastImageIssues = lastApplyResult && Array.isArray(lastApplyResult.imageIssues) ? lastApplyResult.imageIssues : [];
                 updateImageReportState();
-                imageDebug('apply-success', {
-                    createdCount,
-                    updatedCount,
-                    imageReplacedCount,
-                    imageSkippedCount,
-                    imageAmbiguousCount,
-                    imageFailedCount,
-                    issueCount: lastImageIssues.length
-                });
+                renderReviewState();
+                updateStepIndicator();
+
+                const statusType = lastApplyResult && lastApplyResult.status === 'partial' ? 'info' : 'success';
+                const createdCount = lastApplyResult ? lastApplyResult.createdCount : 0;
+                const updatedCount = lastApplyResult ? lastApplyResult.updatedCount : 0;
+                const imageReplacedCount = lastApplyResult ? lastApplyResult.imageReplacedCount : 0;
+                const imageSkippedCount = lastApplyResult ? lastApplyResult.imageSkippedCount : 0;
+                const imageAmbiguousCount = lastApplyResult ? lastApplyResult.imageAmbiguousCount : 0;
+                const imageFailedCount = lastApplyResult ? lastApplyResult.imageFailedCount : 0;
 
                 showStatus(
-                    `Success! ${createdCount} created, ${updatedCount} updated. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageAmbiguousCount} ambiguous, ${imageFailedCount} failed.`,
-                    'success'
+                    `${lastApplyResult && lastApplyResult.status === 'partial' ? 'Applied with warnings.' : 'Apply complete.'} ${createdCount} created, ${updatedCount} updated. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageAmbiguousCount} ambiguous, ${imageFailedCount} failed.`,
+                    statusType
                 );
                 return;
             }
 
             if (msg.type === 'apply-error') {
+                setApplyingState(false);
                 showApplyError(msg.message);
                 return;
             }
 
             if (msg.type === 'selection-changed') {
-                const isValid = Boolean(msg.isValid);
+                isSelectionValid = Boolean(msg.isValid);
                 const nodeName = typeof msg.nodeName === 'string' ? msg.nodeName : '';
                 const message = typeof msg.message === 'string' ? msg.message : '';
 
-                if (isValid) {
+                if (isSelectionValid) {
                     selectionIndicator.classList.add('active');
                     selectionText.textContent = `Selected: ${nodeName}`;
-                    generateBtn.disabled = false;
-                    generateBtn.title = 'Generate prompt for selected frame';
-                    generateBtn.style.opacity = '1';
-                    generateBtn.style.cursor = 'pointer';
+                    formatButtonState(generateBtn, true, 'Generate prompt for selected frame');
                 } else {
                     selectionIndicator.classList.remove('active');
                     selectionText.textContent = message || 'No frame selected (REQUIRED)';
-                    generateBtn.disabled = true;
-                    generateBtn.title = message || 'Please select a frame';
-                    generateBtn.style.opacity = '0.5';
-                    generateBtn.style.cursor = 'not-allowed';
+                    formatButtonState(generateBtn, false, message || 'Please select a frame');
                 }
+
+                invalidateValidation();
                 return;
             }
 
@@ -1261,14 +1515,16 @@
 
                 imageSourceEnabledInput.checked = Boolean(msg.imageSourceEnabled);
                 updateImageSourceFieldsState();
-                updateApplyButtonState();
+                invalidateValidation();
             }
         };
 
         updateImageSourceSummary();
         updateImageSourceFieldsState();
-        updateApplyButtonState();
         updateImageReportState();
+        renderReviewState();
+        updateActionButtons();
+        updateStepIndicator();
 
         parent.postMessage({ pluginMessage: { type: 'ui-ready' } }, '*');
     </script>

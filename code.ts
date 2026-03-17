@@ -5,6 +5,9 @@
 const STORAGE_KEY_LOCALES = 'smartlocal_locales';
 const STORAGE_KEY_PROMPT = 'smartlocal_prompt';
 const STORAGE_KEY_IMAGE_SOURCE_ENABLED = 'smartlocal_image_source_enabled';
+const PLUGIN_DATA_SOURCE_NODE_ID = 'smartlocal_source_node_id';
+const PLUGIN_DATA_SOURCE_FRAME_ID = 'smartlocal_source_frame_id';
+const PLUGIN_DATA_LOCALE = 'smartlocal_locale';
 
 const ALLOWED_IMAGE_EXTENSIONS = new Set<ImageCatalogExtension>(['png', 'jpg', 'jpeg', 'webp']);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -16,8 +19,6 @@ const AMBIGUOUS_MARGIN = 0.04;
 const IMAGE_STOPWORDS = new Set(['img', 'image', 'screen', 'screenshot', 'copy', 'final', 'default']);
 /** Set to true for development debugging. Disable in production to reduce console noise. */
 const IMAGE_DEBUG_ENABLED = false;
-const PERF_DEBUG_ENABLED = false;
-const IMAGE_PREFETCH_CONCURRENCY = 3;
 const APPLY_YIELD_INTERVAL = 25;
 const TEXT_APPLY_YIELD_INTERVAL = 50;
 
@@ -167,15 +168,93 @@ interface ImageIssue {
   candidates?: MatchCandidateSummary[];
 }
 
-interface ApplyPerfStats {
-  extractionMs: number;
-  localePrepMs: number;
-  textFontLoadMs: number;
-  textApplyMs: number;
-  imageDecisionMs: number;
-  imageFetchMs: number;
-  imageApplyMs: number;
-  totalMs: number;
+type Severity = 'error' | 'warning';
+type LocaleMode = 'create' | 'update';
+type ApplyOutcomeStatus = 'success' | 'partial' | 'failed';
+type VariantResolutionMode = 'tagged' | 'compatibility';
+
+interface MessageIssue {
+  code: string;
+  message: string;
+  severity: Severity;
+}
+
+interface LocalePlan {
+  locale: string;
+  mode: LocaleMode;
+  existingNode: LocalizableContainerNode | null;
+  translations: Record<string, string>;
+  translationCount: number;
+  missingTextIds: string[];
+  unknownTextIds: string[];
+  canApply: boolean;
+  issues: MessageIssue[];
+  willApplyImages: boolean;
+}
+
+interface LocaleValidationSummary {
+  locale: string;
+  mode: LocaleMode;
+  translationCount: number;
+  missingTextIds: string[];
+  unknownTextIds: string[];
+  canApply: boolean;
+  issues: MessageIssue[];
+  willApplyImages: boolean;
+}
+
+interface ValidationSummary {
+  sourceTextCount: number;
+  sourceImageCount: number;
+  localeCount: number;
+  responseLocaleCount: number;
+  creatableCount: number;
+  updatableCount: number;
+  blockedCount: number;
+  warningCount: number;
+  imageSourceEnabled: boolean;
+}
+
+interface ValidationResultPayload {
+  selectionName: string;
+  requestedLocales: string[];
+  responseLocales: string[];
+  canApply: boolean;
+  partialIssues: boolean;
+  summary: ValidationSummary;
+  locales: LocaleValidationSummary[];
+}
+
+interface VariantResolution {
+  mode: VariantResolutionMode;
+  nodeMapping: Map<string, TextNode>;
+  sceneNodeMapping: Map<string, SceneNode>;
+}
+
+interface LocaleApplyOutcome {
+  locale: string;
+  mode: LocaleMode;
+  status: ApplyOutcomeStatus;
+  textAppliedCount: number;
+  textFailedCount: number;
+  imageReplacedCount: number;
+  imageSkippedCount: number;
+  imageAmbiguousCount: number;
+  imageFailedCount: number;
+  issues: MessageIssue[];
+}
+
+interface ApplyResultPayload {
+  status: 'success' | 'partial';
+  partialSuccess: boolean;
+  createdCount: number;
+  updatedCount: number;
+  imageReplacedCount: number;
+  imageSkippedCount: number;
+  imageAmbiguousCount: number;
+  imageFailedCount: number;
+  localeOutcomes: LocaleApplyOutcome[];
+  imageIssues: ImageIssue[];
 }
 
 interface PendingByteRequest {
@@ -206,17 +285,6 @@ interface PreparedImageCatalogEntry {
   stableIndex: number;
 }
 
-interface ImageReplacementIntent {
-  locale: string;
-  imageInfo: ImageInfo;
-  targetNode: SceneNode & MinimalFillsMixin;
-  fillIndex: number;
-  matchedEntry: ImageCatalogEntry;
-  matchedBestScore?: number;
-  secondBestScore?: number;
-  candidates: MatchCandidateSummary[];
-}
-
 interface MatchDecision {
   status: 'matched' | 'no-candidate' | 'low-confidence' | 'ambiguous';
   best?: RankedCandidate;
@@ -226,6 +294,7 @@ interface MatchDecision {
 
 const pendingByteRequests = new Map<string, PendingByteRequest>();
 const loadedFonts = new Set<string>();
+let applyInFlight = false;
 
 function getFontKey(fontName: FontName): string {
   return `${fontName.family}::${fontName.style}`;
@@ -240,27 +309,6 @@ async function loadFontOnce(fontName: FontName): Promise<void> {
   loadedFonts.add(key);
 }
 
-function nowMs(): number {
-  const perf = (globalThis as unknown as { performance?: { now: () => number } }).performance;
-  if (perf && typeof perf.now === 'function') {
-    return perf.now();
-  }
-  return Date.now();
-}
-
-function perfDebug(message: string, payload?: unknown): void {
-  if (!PERF_DEBUG_ENABLED) {
-    return;
-  }
-
-  if (payload !== undefined) {
-    console.log(`[smartlocal:perf] ${message}`, payload);
-    return;
-  }
-
-  console.log(`[smartlocal:perf] ${message}`);
-}
-
 async function yieldToMainThread(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 0));
 }
@@ -269,32 +317,6 @@ async function yieldIfNeeded(counter: number, everyN: number): Promise<void> {
   if (counter > 0 && counter % everyN === 0) {
     await yieldToMainThread();
   }
-}
-
-async function runWithConcurrency<T>(
-  items: T[],
-  limit: number,
-  worker: (item: T, index: number) => Promise<void>
-): Promise<void> {
-  if (items.length === 0) {
-    return;
-  }
-
-  const concurrency = Math.max(1, Math.min(limit, items.length));
-  let cursor = 0;
-
-  const runners = Array.from({ length: concurrency }, async () => {
-    while (true) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= items.length) {
-        break;
-      }
-      await worker(items[index], index);
-    }
-  });
-
-  await Promise.all(runners);
 }
 
 function imageDebug(message: string, payload?: unknown): void {
@@ -437,6 +459,179 @@ function buildNodeMapping(original: SceneNode, cloned: SceneNode, mapping: Map<s
   }
 }
 
+function trySetNodePluginData(node: SceneNode, key: string, value: string): void {
+  try {
+    node.setPluginData(key, value);
+  } catch (err) {
+    console.warn(`Failed to set plugin data ${key} on node ${node.id}:`, err);
+  }
+}
+
+function setLocalizedNodeMetadata(
+  original: SceneNode,
+  target: SceneNode,
+  locale: string,
+  sourceFrameId: string,
+  isRoot: boolean
+): void {
+  trySetNodePluginData(target, PLUGIN_DATA_SOURCE_NODE_ID, original.id);
+
+  if (isRoot) {
+    trySetNodePluginData(target, PLUGIN_DATA_SOURCE_FRAME_ID, sourceFrameId);
+    trySetNodePluginData(target, PLUGIN_DATA_LOCALE, locale);
+  }
+
+  if ('children' in original && 'children' in target) {
+    const origChildren = original.children;
+    const targetChildren = target.children;
+
+    for (let i = 0; i < origChildren.length && i < targetChildren.length; i++) {
+      setLocalizedNodeMetadata(origChildren[i], targetChildren[i], locale, sourceFrameId, false);
+    }
+  }
+}
+
+function hasStoredVariantMetadata(node: LocalizableContainerNode, originalFrameId: string, locale: string): boolean {
+  return node.getPluginData(PLUGIN_DATA_SOURCE_FRAME_ID) === originalFrameId
+    && node.getPluginData(PLUGIN_DATA_LOCALE) === locale;
+}
+
+function hasTaggedDescendants(node: SceneNode): boolean {
+  if (node.getPluginData(PLUGIN_DATA_SOURCE_NODE_ID)) {
+    return true;
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) {
+      if (hasTaggedDescendants(child)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function hasExactLegacyTreeMatch(original: SceneNode, candidate: SceneNode, allowRootNameMismatch = false): boolean {
+  if (original.type !== candidate.type) {
+    return false;
+  }
+
+  if (!allowRootNameMismatch && original.type !== 'TEXT' && original.name !== candidate.name) {
+    return false;
+  }
+
+  if ('children' in original !== 'children' in candidate) {
+    return false;
+  }
+
+  if ('children' in original && 'children' in candidate) {
+    if (original.children.length !== candidate.children.length) {
+      return false;
+    }
+
+    for (let i = 0; i < original.children.length; i++) {
+      if (!hasExactLegacyTreeMatch(original.children[i], candidate.children[i], false)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function buildTaggedTextNodeMapping(node: SceneNode, mapping: Map<string, TextNode>, duplicates: Set<string>): void {
+  const sourceNodeId = node.getPluginData(PLUGIN_DATA_SOURCE_NODE_ID);
+  if (sourceNodeId && node.type === 'TEXT') {
+    if (mapping.has(sourceNodeId)) {
+      duplicates.add(sourceNodeId);
+    } else {
+      mapping.set(sourceNodeId, node);
+    }
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) {
+      buildTaggedTextNodeMapping(child, mapping, duplicates);
+    }
+  }
+}
+
+function buildTaggedSceneNodeMapping(node: SceneNode, mapping: Map<string, SceneNode>, duplicates: Set<string>): void {
+  const sourceNodeId = node.getPluginData(PLUGIN_DATA_SOURCE_NODE_ID);
+  if (sourceNodeId) {
+    if (mapping.has(sourceNodeId)) {
+      duplicates.add(sourceNodeId);
+    } else {
+      mapping.set(sourceNodeId, node);
+    }
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) {
+      buildTaggedSceneNodeMapping(child, mapping, duplicates);
+    }
+  }
+}
+
+function resolveVariantMappings(
+  originalFrame: LocalizableContainerNode,
+  targetFrame: LocalizableContainerNode,
+  locale: string,
+  persistCompatibilityMetadata = true
+): { ok: true; resolution: VariantResolution } | { ok: false; message: string } {
+  const hasMetadata = hasStoredVariantMetadata(targetFrame, originalFrame.id, locale) || hasTaggedDescendants(targetFrame);
+
+  if (hasMetadata) {
+    const nodeMapping = new Map<string, TextNode>();
+    const sceneNodeMapping = new Map<string, SceneNode>();
+    const duplicates = new Set<string>();
+
+    buildTaggedTextNodeMapping(targetFrame, nodeMapping, duplicates);
+    buildTaggedSceneNodeMapping(targetFrame, sceneNodeMapping, duplicates);
+
+    if (duplicates.size > 0) {
+      return {
+        ok: false,
+        message: `Existing ${locale} variant has duplicate SmartLocal metadata and cannot be updated safely. Recreate the variant.`
+      };
+    }
+
+    return {
+      ok: true,
+      resolution: {
+        mode: 'tagged',
+        nodeMapping,
+        sceneNodeMapping
+      }
+    };
+  }
+
+  if (!hasExactLegacyTreeMatch(originalFrame, targetFrame, true)) {
+    return {
+      ok: false,
+      message: `Existing ${locale} variant has drifted from the source structure and cannot be updated safely. Recreate or migrate the variant.`
+    };
+  }
+
+  const nodeMapping = new Map<string, TextNode>();
+  buildNodeMapping(originalFrame, targetFrame, nodeMapping);
+  const sceneNodeMapping = new Map<string, SceneNode>();
+  buildSceneNodeMapping(originalFrame, targetFrame, sceneNodeMapping);
+  if (persistCompatibilityMetadata) {
+    setLocalizedNodeMetadata(originalFrame, targetFrame, locale, originalFrame.id, true);
+  }
+
+  return {
+    ok: true,
+    resolution: {
+      mode: 'compatibility',
+      nodeMapping,
+      sceneNodeMapping
+    }
+  };
+}
+
 function isLocalizableContainerNode(node: SceneNode): node is LocalizableContainerNode {
   return node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE';
 }
@@ -508,6 +703,11 @@ function findExistingLocalizedNode(originalNode: LocalizableContainerNode, local
   const siblings = parent.children.filter(
     (child): child is LocalizableContainerNode => child.id !== originalNode.id && isLocalizableContainerNode(child)
   );
+
+  const metadataMatch = siblings.find(child => hasStoredVariantMetadata(child, originalNode.id, locale));
+  if (metadataMatch) {
+    return metadataMatch;
+  }
 
   const exact = siblings.find(child => child.name === expectedName);
   if (exact) {
@@ -1116,6 +1316,212 @@ function getCandidatesForLocale(
   return fallback;
 }
 
+function createIssue(code: string, message: string, severity: Severity = 'error'): MessageIssue {
+  return {
+    code,
+    message,
+    severity
+  };
+}
+
+function summarizeBlockingValidationIssues(payload: ValidationResultPayload): string {
+  for (const locale of payload.locales) {
+    const blockingIssue = locale.issues.find(issue => issue.severity === 'error');
+    if (blockingIssue) {
+      return blockingIssue.message;
+    }
+  }
+
+  return 'Fix the validation issues before applying localization.';
+}
+
+function toValidationSummary(plan: LocalePlan): LocaleValidationSummary {
+  return {
+    locale: plan.locale,
+    mode: plan.mode,
+    translationCount: plan.translationCount,
+    missingTextIds: [...plan.missingTextIds],
+    unknownTextIds: [...plan.unknownTextIds],
+    canApply: plan.canApply,
+    issues: [...plan.issues],
+    willApplyImages: plan.willApplyImages
+  };
+}
+
+function analyzeLocalizationRequest(
+  originalFrame: LocalizableContainerNode,
+  localizations: Localizations,
+  requestedLocales: string[],
+  imageSource: ImageSourceSettings
+): { ok: true; payload: ValidationResultPayload; localePlans: LocalePlan[]; sourceImages: ImageInfo[] }
+  | { ok: false; message: string } {
+  const locales = dedupeLocales(requestedLocales.length > 0 ? requestedLocales : Object.keys(localizations));
+  if (locales.length === 0) {
+    return {
+      ok: false,
+      message: 'No target locales provided'
+    };
+  }
+
+  if (imageSource.enabled && (imageSource.mode !== 'folder' || !imageSource.catalog)) {
+    return {
+      ok: false,
+      message: 'Choose a localized assets folder before validating or applying image replacement'
+    };
+  }
+
+  if (imageSource.enabled && imageSource.catalog && imageSource.catalog.entries.length > MAX_CATALOG_ENTRIES) {
+    return {
+      ok: false,
+      message: `Image catalog exceeds limit (${MAX_CATALOG_ENTRIES}). Reduce files and try again.`
+    };
+  }
+
+  const sourceTexts: TextInfo[] = [];
+  extractTextNodes(originalFrame, sourceTexts);
+  const sourceTextIds = sourceTexts.map(text => text.id);
+  const sourceTextIdSet = new Set(sourceTextIds);
+  const sourceImages: ImageInfo[] = [];
+  if (imageSource.enabled) {
+    extractImageNodes(originalFrame, sourceImages);
+  }
+
+  const responseLocales = dedupeLocales(
+    Object.keys(localizations).filter(locale => Object.keys(getLocaleTranslations(localizations, locale)).length > 0)
+  );
+
+  const localePlans = locales.map(locale => {
+    const translations = getLocaleTranslations(localizations, locale);
+    const translationKeys = Object.keys(translations);
+    const translationCount = translationKeys.length;
+    const existingNode = findExistingLocalizedNode(originalFrame, locale);
+    const mode: LocaleMode = existingNode ? 'update' : 'create';
+    const missingTextIds = sourceTextIds.filter(textId => !Object.prototype.hasOwnProperty.call(translations, textId));
+    const unknownTextIds = translationKeys.filter(textId => !sourceTextIdSet.has(textId));
+    const willApplyImages = imageSource.enabled && sourceImages.length > 0;
+    const issues: MessageIssue[] = [];
+
+    if (unknownTextIds.length > 0) {
+      issues.push(createIssue(
+        'unknown-text-ids',
+        `${locale}: ${unknownTextIds.length} response IDs do not exist in the selected source and will be ignored.`,
+        'warning'
+      ));
+    }
+
+    if (mode === 'create' && sourceTextIds.length > 0) {
+      if (translationCount === 0) {
+        issues.push(createIssue(
+          'missing-new-locale-translations',
+          `Full JSON is required for new locale ${locale}. Add translations for all ${sourceTextIds.length} text nodes.`
+        ));
+      } else if (missingTextIds.length > 0) {
+        issues.push(createIssue(
+          'incomplete-new-locale-translations',
+          `New locale ${locale} is missing ${missingTextIds.length} text IDs. Add a complete translation set before applying.`
+        ));
+      }
+    }
+
+    if (mode === 'update' && translationCount === 0 && !willApplyImages) {
+      issues.push(createIssue(
+        'missing-locale-translations',
+        `No translations were found for requested locale ${locale}. Validate a matching JSON response or remove the locale from the request.`
+      ));
+    }
+
+    if (existingNode) {
+      const resolved = resolveVariantMappings(originalFrame, existingNode, locale, false);
+      if (!resolved.ok) {
+        issues.push(createIssue(
+          'unsafe-existing-variant',
+          resolved.message
+        ));
+      } else {
+        const missingMappedTextIds = translationKeys.filter(
+          textId => !unknownTextIds.includes(textId) && !resolved.resolution.nodeMapping.has(textId)
+        );
+        if (missingMappedTextIds.length > 0) {
+          issues.push(createIssue(
+            'missing-target-text-nodes',
+            `Existing ${locale} variant is missing ${missingMappedTextIds.length} mapped text nodes and cannot be updated safely.`
+          ));
+        }
+
+        if (willApplyImages) {
+          const missingMappedImageIds = sourceImages.filter(imageInfo => !resolved.resolution.sceneNodeMapping.has(imageInfo.id));
+          if (missingMappedImageIds.length > 0) {
+            issues.push(createIssue(
+              'missing-target-image-nodes',
+              `Existing ${locale} variant is missing ${missingMappedImageIds.length} mapped image nodes and cannot be updated safely.`
+            ));
+          }
+        }
+      }
+    }
+
+    if (translationCount === 0 && imageSource.enabled && sourceImages.length === 0) {
+      issues.push(createIssue(
+        'no-source-images',
+        `Image replacement is enabled, but the selected source has no visible image nodes for locale ${locale}.`
+      ));
+    }
+
+    const hasWork = translationCount > 0 || willApplyImages;
+    if (!hasWork) {
+      issues.push(createIssue(
+        'no-applicable-work',
+        `Locale ${locale} has nothing to apply yet. Validate translations or load localized images first.`
+      ));
+    }
+
+    const canApply = hasWork && !issues.some(issue => issue.severity === 'error');
+
+    return {
+      locale,
+      mode,
+      existingNode,
+      translations,
+      translationCount,
+      missingTextIds,
+      unknownTextIds,
+      canApply,
+      issues,
+      willApplyImages
+    };
+  });
+
+  const summary: ValidationSummary = {
+    sourceTextCount: sourceTexts.length,
+    sourceImageCount: sourceImages.length,
+    localeCount: localePlans.length,
+    responseLocaleCount: responseLocales.length,
+    creatableCount: localePlans.filter(plan => plan.mode === 'create' && plan.canApply).length,
+    updatableCount: localePlans.filter(plan => plan.mode === 'update' && plan.canApply).length,
+    blockedCount: localePlans.filter(plan => !plan.canApply).length,
+    warningCount: localePlans.reduce(
+      (count, plan) => count + plan.issues.filter(issue => issue.severity === 'warning').length,
+      0
+    ),
+    imageSourceEnabled: imageSource.enabled
+  };
+
+  return {
+    ok: true,
+    payload: {
+      selectionName: originalFrame.name,
+      requestedLocales: locales,
+      responseLocales,
+      canApply: summary.blockedCount === 0 && localePlans.some(plan => plan.canApply),
+      partialIssues: summary.warningCount > 0,
+      summary,
+      locales: localePlans.map(toValidationSummary)
+    },
+    localePlans,
+    sourceImages
+  };
+}
+
 /**
  * Message handler for UI ↔ plugin communication.
  * Handled types: image-bytes-response, ui-ready, generate-prompt, extract-all-frames-content,
@@ -1269,8 +1675,42 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     return;
   }
 
+  if (msg.type === 'validate-localization') {
+    const validation = getValidatedSelection();
+    if (!validation.valid) {
+      figma.ui.postMessage({ type: 'validation-error', message: validation.message });
+      return;
+    }
+
+    const localizations = (msg.localizations && typeof msg.localizations === 'object' && !Array.isArray(msg.localizations))
+      ? msg.localizations as Localizations
+      : {};
+    const requestedLocales = parseLocaleList(msg.locales);
+    const imageSource = parseImageSourceSettings(msg.imageSource);
+    const analysis = analyzeLocalizationRequest(validation.node, localizations, requestedLocales, imageSource);
+
+    if (!analysis.ok) {
+      figma.ui.postMessage({ type: 'validation-error', message: analysis.message });
+      return;
+    }
+
+    figma.ui.postMessage({
+      type: 'validation-result',
+      validation: analysis.payload
+    });
+    return;
+  }
+
   // Apply Localization
   if (msg.type === 'apply-localization') {
+    if (applyInFlight) {
+      figma.ui.postMessage({
+        type: 'apply-error',
+        message: 'Localization is already running. Wait for the current apply to finish before trying again.'
+      });
+      return;
+    }
+
     const validation = getValidatedSelection();
     if (!validation.valid) {
       const message = validation.message === 'Please select a frame first'
@@ -1286,109 +1726,29 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       : {};
     const requestedLocales = parseLocaleList(msg.locales);
     const imageSource = parseImageSourceSettings(msg.imageSource);
-    const locales = dedupeLocales(requestedLocales.length > 0 ? requestedLocales : Object.keys(localizations));
+    const analysis = analyzeLocalizationRequest(originalFrame, localizations, requestedLocales, imageSource);
 
-    if (locales.length === 0) {
+    if (!analysis.ok) {
       figma.ui.postMessage({
         type: 'apply-error',
-        message: 'No target locales provided'
+        message: analysis.message
       });
       return;
     }
 
-    if (imageSource.enabled && (imageSource.mode !== 'folder' || !imageSource.catalog)) {
+    if (!analysis.payload.canApply) {
       figma.ui.postMessage({
         type: 'apply-error',
-        message: 'Choose a localized assets folder before applying image replacement'
-      });
-      return;
-    }
-
-    if (imageSource.enabled && imageSource.catalog && imageSource.catalog.entries.length > MAX_CATALOG_ENTRIES) {
-      figma.ui.postMessage({
-        type: 'apply-error',
-        message: `Image catalog exceeds limit (${MAX_CATALOG_ENTRIES}). Reduce files and try again.`
+        message: summarizeBlockingValidationIssues(analysis.payload)
       });
       return;
     }
 
     const spacing = 40;
-    const sourceTexts: TextInfo[] = [];
-    extractTextNodes(originalFrame, sourceTexts);
-    const sourceTextIds = sourceTexts.map(text => text.id);
-
-    const localePlans = locales.map(locale => {
-      const translations = getLocaleTranslations(localizations, locale);
-      const translationCount = Object.keys(translations).length;
-      const existingNode = findExistingLocalizedNode(originalFrame, locale);
-      return {
-        locale,
-        translations,
-        translationCount,
-        existingNode,
-        isExisting: Boolean(existingNode)
-      };
-    });
-    const localePlansByLocale = new Map(localePlans.map(plan => [plan.locale, plan]));
-
-    const missingNewLocales = localePlans
-      .filter(plan => !plan.isExisting && plan.translationCount === 0 && !imageSource.enabled)
-      .map(plan => plan.locale);
-
-    if (missingNewLocales.length > 0) {
-      figma.ui.postMessage({
-        type: 'apply-error',
-        message: `Full JSON required for first-time localization. Missing translations for new locales: ${missingNewLocales.join(', ')}`
-      });
-      return;
-    }
-
-    const incompleteNewLocales: string[] = [];
-    if (sourceTextIds.length > 0) {
-      for (const plan of localePlans) {
-        if (plan.isExisting || plan.translationCount === 0) {
-          continue;
-        }
-
-        let missingCount = 0;
-        for (const textId of sourceTextIds) {
-          if (!Object.prototype.hasOwnProperty.call(plan.translations, textId)) {
-            missingCount++;
-          }
-        }
-
-        if (missingCount > 0) {
-          incompleteNewLocales.push(`${plan.locale} (${missingCount} missing IDs)`);
-        }
-      }
-    }
-
-    if (incompleteNewLocales.length > 0) {
-      figma.ui.postMessage({
-        type: 'apply-error',
-        message: `Full JSON required for new locales. Incomplete translations: ${incompleteNewLocales.join(', ')}`
-      });
-      return;
-    }
-
-    const hasAnyTextTranslations = localePlans.some(plan => plan.translationCount > 0);
-    const localesToProcess = localePlans
-      .filter(plan => plan.translationCount > 0 || imageSource.enabled)
-      .map(plan => plan.locale);
-    imageDebug('apply-start', {
-      locales,
-      localesToProcess,
-      imageSourceEnabled: imageSource.enabled,
-      hasAnyTextTranslations
-    });
-
-    if (!imageSource.enabled && !hasAnyTextTranslations) {
-      figma.ui.postMessage({
-        type: 'apply-error',
-        message: 'No localizations found in the response'
-      });
-      return;
-    }
+    const localePlans = analysis.localePlans.filter(plan => plan.canApply);
+    const imageHashCache = new Map<string, string>();
+    const imageIssues: ImageIssue[] = [];
+    const localeCatalog = imageSource.catalog ? getLocaleCatalog(imageSource.catalog) : new Map<string, PreparedImageCatalogEntry[]>();
 
     let createdCount = 0;
     let updatedCount = 0;
@@ -1396,361 +1756,438 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     let imageSkippedCount = 0;
     let imageAmbiguousCount = 0;
     let imageFailedCount = 0;
-    const imageIssues: ImageIssue[] = [];
+    const localeOutcomes: LocaleApplyOutcome[] = [];
 
-    const imageHashCache = new Map<string, string>();
-    const sourceImages: ImageInfo[] = [];
-    const localeCatalog = imageSource.catalog ? getLocaleCatalog(imageSource.catalog) : new Map<string, PreparedImageCatalogEntry[]>();
+    applyInFlight = true;
 
-    if (imageSource.enabled) {
-      extractImageNodes(originalFrame, sourceImages);
-      imageDebug('apply-source-images', {
-        sourceImageCount: sourceImages.length,
-        sample: sourceImages.slice(0, 6)
-      });
-    }
+    try {
+      for (let localeIndex = 0; localeIndex < localePlans.length; localeIndex++) {
+        const localePlan = localePlans[localeIndex];
+        const locale = localePlan.locale;
+        const translations = localePlan.translations;
+        const unknownIdSet = new Set(localePlan.unknownTextIds);
+        let targetFrame: LocalizableContainerNode | null = null;
+        let createdThisRun = false;
 
-    if (imageSource.enabled && sourceImages.length === 0 && !hasAnyTextTranslations) {
-      figma.ui.postMessage({
-        type: 'apply-error',
-        message: 'No visible image nodes found to replace'
-      });
-      return;
-    }
+        const outcome: LocaleApplyOutcome = {
+          locale,
+          mode: localePlan.mode,
+          status: 'success',
+          textAppliedCount: 0,
+          textFailedCount: 0,
+          imageReplacedCount: 0,
+          imageSkippedCount: 0,
+          imageAmbiguousCount: 0,
+          imageFailedCount: 0,
+          issues: localePlan.issues.filter(issue => issue.severity === 'warning')
+        };
 
-    for (let i = 0; i < localesToProcess.length; i++) {
-      const locale = localesToProcess[i];
-      const localePlan = localePlansByLocale.get(locale);
-      if (!localePlan) {
-        continue;
-      }
+        try {
+          let resolution: VariantResolution;
 
-      const translations = localePlan.translations;
-      imageDebug('locale-start', {
-        locale,
-        localeIndex: i + 1,
-        totalLocales: localesToProcess.length,
-        translationCount: Object.keys(translations).length,
-        mode: localePlan.isExisting ? 'update' : 'create'
-      });
+          if (localePlan.existingNode) {
+            targetFrame = localePlan.existingNode;
+            const resolved = resolveVariantMappings(originalFrame, targetFrame, locale);
+            if (!resolved.ok) {
+              outcome.status = 'failed';
+              outcome.issues.push(createIssue('variant-drifted', resolved.message));
+              localeOutcomes.push(outcome);
+              continue;
+            }
+            resolution = resolved.resolution;
+            if (resolution.mode === 'compatibility') {
+              outcome.issues.push(createIssue(
+                'legacy-variant-migrated',
+                `Existing ${locale} variant matched the legacy structure and was upgraded with SmartLocal metadata.`,
+                'warning'
+              ));
+            }
+          } else {
+            const clonedFrame = originalFrame.clone();
+            clonedFrame.name = `${originalFrame.name}_${locale}`;
+            clonedFrame.y = getNextLocalizedVariantY(originalFrame, spacing);
+            setLocalizedNodeMetadata(originalFrame, clonedFrame, locale, originalFrame.id, true);
+            createdThisRun = true;
+            targetFrame = clonedFrame;
 
-      try {
-        let targetFrame: LocalizableContainerNode;
-        if (localePlan.existingNode) {
-          targetFrame = localePlan.existingNode;
-        } else {
-          const clonedFrame = originalFrame.clone();
-          clonedFrame.name = `${originalFrame.name}_${locale}`;
-          clonedFrame.y = getNextLocalizedVariantY(originalFrame, spacing);
-          targetFrame = clonedFrame;
-        }
+            const nodeMapping = new Map<string, TextNode>();
+            buildNodeMapping(originalFrame, targetFrame, nodeMapping);
+            const sceneNodeMapping = new Map<string, SceneNode>();
+            buildSceneNodeMapping(originalFrame, targetFrame, sceneNodeMapping);
+            resolution = {
+              mode: 'tagged',
+              nodeMapping,
+              sceneNodeMapping
+            };
+          }
 
-        const nodeMapping = new Map<string, TextNode>();
-        buildNodeMapping(originalFrame, targetFrame, nodeMapping);
-        const sceneNodeMapping = new Map<string, SceneNode>();
-        buildSceneNodeMapping(originalFrame, targetFrame, sceneNodeMapping);
-
-        // Load fonts for all translated text nodes first.
-        for (const [originalId] of Object.entries(translations)) {
-          const textNode = nodeMapping.get(originalId);
-          if (!textNode || textNode.characters.length === 0) {
+          const missingMappedTextIds = Object.keys(translations).filter(
+            sourceNodeId => !unknownIdSet.has(sourceNodeId) && !resolution.nodeMapping.has(sourceNodeId)
+          );
+          if (missingMappedTextIds.length > 0) {
+            outcome.status = 'failed';
+            outcome.issues.push(createIssue(
+              'missing-target-text-nodes',
+              `Existing ${locale} variant is missing ${missingMappedTextIds.length} mapped text nodes and cannot be updated safely.`
+            ));
+            if (createdThisRun && targetFrame) {
+              targetFrame.remove();
+            }
+            localeOutcomes.push(outcome);
             continue;
           }
 
-          try {
-            const fontName = textNode.fontName;
-            if (fontName !== figma.mixed) {
-              await loadFontOnce(fontName);
-            } else {
-              const fontNames = textNode.getRangeAllFontNames(0, textNode.characters.length);
-              for (const fn of fontNames) {
-                await loadFontOnce(fn);
-              }
+          const missingMappedImageIds = analysis.sourceImages
+            .filter(imageInfo => !resolution.sceneNodeMapping.has(imageInfo.id))
+            .map(imageInfo => imageInfo.id);
+          if (localePlan.willApplyImages && missingMappedImageIds.length > 0) {
+            outcome.status = 'failed';
+            outcome.issues.push(createIssue(
+              'missing-target-image-nodes',
+              `Existing ${locale} variant is missing ${missingMappedImageIds.length} mapped image nodes and cannot be updated safely.`
+            ));
+            if (createdThisRun && targetFrame) {
+              targetFrame.remove();
             }
-          } catch (fontErr) {
-            console.warn(`Font loading error for ${originalId}:`, fontErr);
-          }
-        }
-
-        for (const [originalId, translatedText] of Object.entries(translations)) {
-          const textNode = nodeMapping.get(originalId);
-          if (!textNode) {
+            localeOutcomes.push(outcome);
             continue;
           }
 
-          try {
-            const segments = textNode.getStyledTextSegments([
-              'fontName',
-              'fontSize',
-              'fills',
-              'lineHeight',
-              'letterSpacing',
-              'textDecoration',
-              'textCase'
-            ]);
-
-            if (segments.length === 0) {
-              textNode.characters = translatedText;
+          let fontLoadIndex = 0;
+          for (const [originalId] of Object.entries(translations)) {
+            if (unknownIdSet.has(originalId)) {
               continue;
             }
 
-            let dominantSegment = segments[0];
-            let maxLen = 0;
-            for (const segment of segments) {
-              const len = segment.end - segment.start;
-              if (len > maxLen) {
-                maxLen = len;
-                dominantSegment = segment;
-              }
-            }
-
-            await loadFontOnce(dominantSegment.fontName);
-
-            textNode.characters = translatedText;
-
-            textNode.fontSize = dominantSegment.fontSize;
-            textNode.fontName = dominantSegment.fontName;
-            textNode.fills = dominantSegment.fills;
-            textNode.lineHeight = dominantSegment.lineHeight;
-            textNode.letterSpacing = dominantSegment.letterSpacing;
-            textNode.textDecoration = dominantSegment.textDecoration;
-            textNode.textCase = dominantSegment.textCase;
-          } catch (textErr) {
-            console.warn(`Text replacement error for ${originalId}:`, textErr);
-          }
-        }
-
-        if (imageSource.enabled && sourceImages.length > 0) {
-          const localeCandidates = getCandidatesForLocale(localeCatalog, locale);
-          imageDebug('locale-candidate-pool', {
-            locale,
-            candidateCount: localeCandidates.length
-          });
-
-          for (const imageInfo of sourceImages) {
-            imageDebug('node-eval-start', {
-              locale,
-              nodeId: imageInfo.id,
-              nodeName: imageInfo.nodeName,
-              fillIndex: imageInfo.fillIndex
-            });
-            const targetNode = sceneNodeMapping.get(imageInfo.id);
-            if (!targetNode || !isNodeWithFills(targetNode) || targetNode.fills === figma.mixed) {
-              imageSkippedCount++;
-              imageDebug('node-skip:no-target-or-fills', {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName
-              });
-              addImageIssue(imageIssues, {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName,
-                reason: 'no-candidate'
-              });
+            const textNode = resolution.nodeMapping.get(originalId);
+            if (!textNode || textNode.characters.length === 0) {
               continue;
-            }
-
-            const fills = [...targetNode.fills] as Paint[];
-            if (imageInfo.fillIndex < 0 || imageInfo.fillIndex >= fills.length) {
-              imageSkippedCount++;
-              imageDebug('node-skip:fill-index-out-of-range', {
-                locale,
-                nodeId: imageInfo.id,
-                fillIndex: imageInfo.fillIndex,
-                fillCount: fills.length
-              });
-              addImageIssue(imageIssues, {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName,
-                reason: 'no-candidate'
-              });
-              continue;
-            }
-
-            const targetPaint = fills[imageInfo.fillIndex];
-            if (targetPaint.type !== 'IMAGE') {
-              imageSkippedCount++;
-              imageDebug('node-skip:paint-not-image', {
-                locale,
-                nodeId: imageInfo.id,
-                paintType: targetPaint.type
-              });
-              addImageIssue(imageIssues, {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName,
-                reason: 'no-candidate'
-              });
-              continue;
-            }
-
-            const nodeProfile = createCanonicalNameProfile(imageInfo.nodeName);
-            const matchDecision = decideImageCandidate(nodeProfile, localeCandidates);
-            imageDebug('node-match-decision', {
-              locale,
-              nodeId: imageInfo.id,
-              nodeName: imageInfo.nodeName,
-              normalizedNodeName: nodeProfile.canonical,
-              status: matchDecision.status,
-              bestScore: matchDecision.best ? Number(matchDecision.best.score.toFixed(3)) : null,
-              secondScore: matchDecision.second ? Number(matchDecision.second.score.toFixed(3)) : null,
-              topCandidates: summarizeCandidates(matchDecision.topCandidates)
-            });
-
-            if (matchDecision.status === 'no-candidate') {
-              imageSkippedCount++;
-              addImageIssue(imageIssues, {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName,
-                reason: 'no-candidate'
-              });
-              continue;
-            }
-
-            if (matchDecision.status === 'low-confidence') {
-              imageSkippedCount++;
-              addImageIssue(imageIssues, {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName,
-                reason: 'low-confidence',
-                bestScore: matchDecision.best ? Number(matchDecision.best.score.toFixed(3)) : undefined,
-                secondBestScore: matchDecision.second ? Number(matchDecision.second.score.toFixed(3)) : undefined,
-                candidates: summarizeCandidates(matchDecision.topCandidates)
-              });
-              continue;
-            }
-
-            if (matchDecision.status === 'ambiguous') {
-              imageSkippedCount++;
-              imageAmbiguousCount++;
-              addImageIssue(imageIssues, {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName,
-                reason: 'ambiguous',
-                bestScore: matchDecision.best ? Number(matchDecision.best.score.toFixed(3)) : undefined,
-                secondBestScore: matchDecision.second ? Number(matchDecision.second.score.toFixed(3)) : undefined,
-                candidates: summarizeCandidates(matchDecision.topCandidates)
-              });
-              continue;
-            }
-
-            const matchedEntry = matchDecision.best?.entry;
-            if (!matchedEntry) {
-              imageSkippedCount++;
-              addImageIssue(imageIssues, {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName,
-                reason: 'no-candidate'
-              });
-              continue;
-            }
-
-            let imageHash = imageHashCache.get(matchedEntry.key);
-            const matchedBestScore = matchDecision.best ? Number(matchDecision.best.score.toFixed(3)) : undefined;
-            if (!imageHash) {
-              imageDebug('node-match:selected', {
-                locale,
-                nodeId: imageInfo.id,
-                fileKey: matchedEntry.key,
-                relPath: matchedEntry.relPath,
-                score: matchedBestScore
-              });
-              const bytes = await requestImageBytesFromUi(matchedEntry.key);
-              if (!bytes || bytes.byteLength === 0) {
-                imageFailedCount++;
-                imageDebug('node-fail:bytes-missing', {
-                  locale,
-                  nodeId: imageInfo.id,
-                  fileKey: matchedEntry.key
-                });
-                addImageIssue(imageIssues, {
-                  locale,
-                  nodeId: imageInfo.id,
-                  nodeName: imageInfo.nodeName,
-                  reason: 'read-failed',
-                  bestScore: matchedBestScore,
-                  secondBestScore: matchDecision.second ? Number(matchDecision.second.score.toFixed(3)) : undefined,
-                  candidates: summarizeCandidates(matchDecision.topCandidates)
-                });
-                continue;
-              }
-
-              try {
-                imageHash = figma.createImage(bytes).hash;
-                imageHashCache.set(matchedEntry.key, imageHash);
-                imageDebug('image-cache:set', {
-                  fileKey: matchedEntry.key,
-                  hash: imageHash
-                });
-              } catch (imageErr) {
-                console.warn(`Failed to create image for file key ${matchedEntry.key}:`, imageErr);
-                imageFailedCount++;
-                addImageIssue(imageIssues, {
-                  locale,
-                  nodeId: imageInfo.id,
-                  nodeName: imageInfo.nodeName,
-                  reason: 'read-failed',
-                  bestScore: matchedBestScore,
-                  secondBestScore: matchDecision.second ? Number(matchDecision.second.score.toFixed(3)) : undefined,
-                  candidates: summarizeCandidates(matchDecision.topCandidates)
-                });
-                continue;
-              }
             }
 
             try {
-              fills[imageInfo.fillIndex] = {
-                ...targetPaint,
-                imageHash
-              };
-              targetNode.fills = fills;
-              imageReplacedCount++;
-              imageDebug('node-replace:success', {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName,
-                fileKey: matchedEntry.key
-              });
-            } catch (imageErr) {
-              console.warn(`Image replacement failed for ${locale}/${imageInfo.nodeName}:`, imageErr);
-              imageFailedCount++;
-              addImageIssue(imageIssues, {
-                locale,
-                nodeId: imageInfo.id,
-                nodeName: imageInfo.nodeName,
-                reason: 'read-failed',
-                bestScore: matchedBestScore,
-                secondBestScore: matchDecision.second ? Number(matchDecision.second.score.toFixed(3)) : undefined,
-                candidates: summarizeCandidates(matchDecision.topCandidates)
-              });
+              const fontName = textNode.fontName;
+              if (fontName !== figma.mixed) {
+                await loadFontOnce(fontName);
+              } else {
+                const fontNames = textNode.getRangeAllFontNames(0, textNode.characters.length);
+                for (const fn of fontNames) {
+                  await loadFontOnce(fn);
+                }
+              }
+            } catch (fontErr) {
+              console.warn(`Font loading error for ${locale}/${originalId}:`, fontErr);
+              outcome.textFailedCount++;
+              outcome.issues.push(createIssue(
+                'font-load-failed',
+                `Failed to load fonts for locale ${locale} text node ${originalId}.`
+              ));
             }
+
+            fontLoadIndex++;
+            await yieldIfNeeded(fontLoadIndex, TEXT_APPLY_YIELD_INTERVAL);
+          }
+
+          let textApplyIndex = 0;
+          for (const [originalId, translatedText] of Object.entries(translations)) {
+            if (unknownIdSet.has(originalId)) {
+              continue;
+            }
+
+            const textNode = resolution.nodeMapping.get(originalId);
+            if (!textNode) {
+              outcome.textFailedCount++;
+              outcome.issues.push(createIssue(
+                'missing-target-node',
+                `Locale ${locale} could not resolve source text node ${originalId} in the target variant.`
+              ));
+              continue;
+            }
+
+            try {
+              const segments = textNode.getStyledTextSegments([
+                'fontName',
+                'fontSize',
+                'fills',
+                'lineHeight',
+                'letterSpacing',
+                'textDecoration',
+                'textCase'
+              ]);
+
+              if (segments.length === 0) {
+                textNode.characters = translatedText;
+                outcome.textAppliedCount++;
+                continue;
+              }
+
+              let dominantSegment = segments[0];
+              let maxLen = 0;
+              for (const segment of segments) {
+                const len = segment.end - segment.start;
+                if (len > maxLen) {
+                  maxLen = len;
+                  dominantSegment = segment;
+                }
+              }
+
+              await loadFontOnce(dominantSegment.fontName);
+
+              textNode.characters = translatedText;
+              textNode.fontSize = dominantSegment.fontSize;
+              textNode.fontName = dominantSegment.fontName;
+              textNode.fills = dominantSegment.fills;
+              textNode.lineHeight = dominantSegment.lineHeight;
+              textNode.letterSpacing = dominantSegment.letterSpacing;
+              textNode.textDecoration = dominantSegment.textDecoration;
+              textNode.textCase = dominantSegment.textCase;
+              outcome.textAppliedCount++;
+            } catch (textErr) {
+              console.warn(`Text replacement error for ${locale}/${originalId}:`, textErr);
+              outcome.textFailedCount++;
+              outcome.issues.push(createIssue(
+                'text-apply-failed',
+                `Failed to apply translated text for locale ${locale} node ${originalId}.`
+              ));
+            }
+
+            textApplyIndex++;
+            await yieldIfNeeded(textApplyIndex, TEXT_APPLY_YIELD_INTERVAL);
+          }
+
+          if (localePlan.willApplyImages) {
+            const localeCandidates = getCandidatesForLocale(localeCatalog, locale);
+
+            for (let imageIndex = 0; imageIndex < analysis.sourceImages.length; imageIndex++) {
+              const imageInfo = analysis.sourceImages[imageIndex];
+              const targetNode = resolution.sceneNodeMapping.get(imageInfo.id);
+
+              if (!targetNode || !isNodeWithFills(targetNode) || targetNode.fills === figma.mixed) {
+                outcome.imageSkippedCount++;
+                imageSkippedCount++;
+                addImageIssue(imageIssues, {
+                  locale,
+                  nodeId: imageInfo.id,
+                  nodeName: imageInfo.nodeName,
+                  reason: 'no-candidate'
+                });
+                await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+                continue;
+              }
+
+              const fills = [...targetNode.fills] as Paint[];
+              if (imageInfo.fillIndex < 0 || imageInfo.fillIndex >= fills.length) {
+                outcome.imageSkippedCount++;
+                imageSkippedCount++;
+                addImageIssue(imageIssues, {
+                  locale,
+                  nodeId: imageInfo.id,
+                  nodeName: imageInfo.nodeName,
+                  reason: 'no-candidate'
+                });
+                await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+                continue;
+              }
+
+              const targetPaint = fills[imageInfo.fillIndex];
+              if (targetPaint.type !== 'IMAGE') {
+                outcome.imageSkippedCount++;
+                imageSkippedCount++;
+                addImageIssue(imageIssues, {
+                  locale,
+                  nodeId: imageInfo.id,
+                  nodeName: imageInfo.nodeName,
+                  reason: 'no-candidate'
+                });
+                await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+                continue;
+              }
+
+              const nodeProfile = createCanonicalNameProfile(imageInfo.nodeName);
+              const matchDecision = decideImageCandidate(nodeProfile, localeCandidates);
+              const bestScore = matchDecision.best ? Number(matchDecision.best.score.toFixed(3)) : undefined;
+              const secondBestScore = matchDecision.second ? Number(matchDecision.second.score.toFixed(3)) : undefined;
+
+              if (matchDecision.status === 'no-candidate') {
+                outcome.imageSkippedCount++;
+                imageSkippedCount++;
+                addImageIssue(imageIssues, {
+                  locale,
+                  nodeId: imageInfo.id,
+                  nodeName: imageInfo.nodeName,
+                  reason: 'no-candidate'
+                });
+                await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+                continue;
+              }
+
+              if (matchDecision.status === 'low-confidence') {
+                outcome.imageSkippedCount++;
+                imageSkippedCount++;
+                addImageIssue(imageIssues, {
+                  locale,
+                  nodeId: imageInfo.id,
+                  nodeName: imageInfo.nodeName,
+                  reason: 'low-confidence',
+                  bestScore,
+                  secondBestScore,
+                  candidates: summarizeCandidates(matchDecision.topCandidates)
+                });
+                await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+                continue;
+              }
+
+              if (matchDecision.status === 'ambiguous') {
+                outcome.imageSkippedCount++;
+                outcome.imageAmbiguousCount++;
+                imageSkippedCount++;
+                imageAmbiguousCount++;
+                addImageIssue(imageIssues, {
+                  locale,
+                  nodeId: imageInfo.id,
+                  nodeName: imageInfo.nodeName,
+                  reason: 'ambiguous',
+                  bestScore,
+                  secondBestScore,
+                  candidates: summarizeCandidates(matchDecision.topCandidates)
+                });
+                await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+                continue;
+              }
+
+              const matchedEntry = matchDecision.best?.entry;
+              if (!matchedEntry) {
+                outcome.imageSkippedCount++;
+                imageSkippedCount++;
+                addImageIssue(imageIssues, {
+                  locale,
+                  nodeId: imageInfo.id,
+                  nodeName: imageInfo.nodeName,
+                  reason: 'no-candidate'
+                });
+                await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+                continue;
+              }
+
+              let imageHash = imageHashCache.get(matchedEntry.key);
+              if (!imageHash) {
+                const bytes = await requestImageBytesFromUi(matchedEntry.key);
+                if (!bytes || bytes.byteLength === 0) {
+                  outcome.imageFailedCount++;
+                  imageFailedCount++;
+                  addImageIssue(imageIssues, {
+                    locale,
+                    nodeId: imageInfo.id,
+                    nodeName: imageInfo.nodeName,
+                    reason: 'read-failed',
+                    bestScore,
+                    secondBestScore,
+                    candidates: summarizeCandidates(matchDecision.topCandidates)
+                  });
+                  await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+                  continue;
+                }
+
+                try {
+                  imageHash = figma.createImage(bytes).hash;
+                  imageHashCache.set(matchedEntry.key, imageHash);
+                } catch (imageErr) {
+                  console.warn(`Failed to create image for file key ${matchedEntry.key}:`, imageErr);
+                  outcome.imageFailedCount++;
+                  imageFailedCount++;
+                  addImageIssue(imageIssues, {
+                    locale,
+                    nodeId: imageInfo.id,
+                    nodeName: imageInfo.nodeName,
+                    reason: 'read-failed',
+                    bestScore,
+                    secondBestScore,
+                    candidates: summarizeCandidates(matchDecision.topCandidates)
+                  });
+                  await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+                  continue;
+                }
+              }
+
+              try {
+                fills[imageInfo.fillIndex] = {
+                  ...targetPaint,
+                  imageHash
+                };
+                targetNode.fills = fills;
+                outcome.imageReplacedCount++;
+                imageReplacedCount++;
+              } catch (imageErr) {
+                console.warn(`Image replacement failed for ${locale}/${imageInfo.nodeName}:`, imageErr);
+                outcome.imageFailedCount++;
+                imageFailedCount++;
+                addImageIssue(imageIssues, {
+                  locale,
+                  nodeId: imageInfo.id,
+                  nodeName: imageInfo.nodeName,
+                  reason: 'read-failed',
+                  bestScore,
+                  secondBestScore,
+                  candidates: summarizeCandidates(matchDecision.topCandidates)
+                });
+              }
+
+              await yieldIfNeeded(imageIndex + 1, APPLY_YIELD_INTERVAL);
+            }
+          }
+
+          const hasErrors = outcome.issues.some(issue => issue.severity === 'error')
+            || outcome.textFailedCount > 0
+            || outcome.imageFailedCount > 0;
+          const hasWarnings = outcome.issues.some(issue => issue.severity === 'warning')
+            || outcome.imageSkippedCount > 0
+            || outcome.imageAmbiguousCount > 0;
+          const hasAppliedChanges = outcome.textAppliedCount > 0 || outcome.imageReplacedCount > 0;
+
+          if (hasErrors && !hasAppliedChanges) {
+            outcome.status = 'failed';
+          } else if (hasErrors || hasWarnings) {
+            outcome.status = 'partial';
+          }
+
+          if (outcome.status === 'failed' && createdThisRun && targetFrame) {
+            targetFrame.remove();
+          } else if (outcome.mode === 'create') {
+            createdCount++;
+          } else {
+            updatedCount++;
+          }
+        } catch (localeErr) {
+          console.error(`Failed to process locale ${locale}:`, localeErr);
+          outcome.status = 'failed';
+          outcome.issues.push(createIssue(
+            'locale-apply-failed',
+            `Locale ${locale} failed to apply because of an unexpected plugin error.`
+          ));
+          if (createdThisRun && targetFrame) {
+            targetFrame.remove();
           }
         }
 
-        if (localePlan.isExisting) {
-          updatedCount++;
-        } else {
-          createdCount++;
-        }
-
-        imageDebug('locale-complete', {
-          locale,
-          createdCountSoFar: createdCount,
-          updatedCountSoFar: updatedCount,
-          replaced: imageReplacedCount,
-          skipped: imageSkippedCount,
-          ambiguous: imageAmbiguousCount,
-          failed: imageFailedCount
-        });
-      } catch (localeErr) {
-        console.error(`Failed to process locale ${locale}:`, localeErr);
+        localeOutcomes.push(outcome);
       }
+    } finally {
+      applyInFlight = false;
+    }
+
+    const successfulOutcomes = localeOutcomes.filter(outcome => outcome.status !== 'failed');
+    if (successfulOutcomes.length === 0) {
+      let firstFailure: MessageIssue | undefined;
+      for (const outcome of localeOutcomes) {
+        firstFailure = outcome.issues.find(issue => issue.severity === 'error');
+        if (firstFailure) {
+          break;
+        }
+      }
+      figma.ui.postMessage({
+        type: 'apply-error',
+        message: firstFailure ? firstFailure.message : 'Localization could not be applied safely. Review the validation results and try again.'
+      });
+      return;
     }
 
     imageDebug('apply-complete', {
@@ -1763,20 +2200,28 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       issueCount: imageIssues.length
     });
 
-    figma.ui.postMessage({
-      type: 'apply-success',
-      frameCount: createdCount,
+    const partialSuccess = localeOutcomes.some(outcome => outcome.status !== 'success');
+    const applyResult: ApplyResultPayload = {
+      status: partialSuccess ? 'partial' : 'success',
+      partialSuccess,
       createdCount,
       updatedCount,
       imageReplacedCount,
       imageSkippedCount,
       imageAmbiguousCount,
       imageFailedCount,
+      localeOutcomes,
       imageIssues
+    };
+
+    figma.ui.postMessage({
+      type: 'apply-result',
+      result: applyResult
     });
 
+    const notifyPrefix = partialSuccess ? '⚠️' : '✨';
     figma.notify(
-      `✨ Localizations applied. ${createdCount} created, ${updatedCount} updated. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageAmbiguousCount} ambiguous, ${imageFailedCount} failed.`
+      `${notifyPrefix} Localizations applied. ${createdCount} created, ${updatedCount} updated. Images: ${imageReplacedCount} replaced, ${imageSkippedCount} skipped, ${imageAmbiguousCount} ambiguous, ${imageFailedCount} failed.`
     );
     return;
   }
