@@ -58,7 +58,8 @@ function checkSelection() {
     figma.ui.postMessage({
       type: 'selection-changed',
       isValid: true,
-      nodeName: node.name
+      nodeName: node.name,
+      selectionId: node.id
     });
     return;
   }
@@ -171,7 +172,7 @@ interface ImageIssue {
 type Severity = 'error' | 'warning';
 type LocaleMode = 'create' | 'update';
 type ApplyOutcomeStatus = 'success' | 'partial' | 'failed';
-type VariantResolutionMode = 'tagged' | 'compatibility';
+type VariantResolutionMode = 'tagged';
 
 interface MessageIssue {
   code: string;
@@ -512,7 +513,7 @@ function hasTaggedDescendants(node: SceneNode): boolean {
   return false;
 }
 
-function hasExactLegacyTreeMatch(original: SceneNode, candidate: SceneNode, allowRootNameMismatch = false): boolean {
+function _hasExactLegacyTreeMatch(original: SceneNode, candidate: SceneNode, allowRootNameMismatch = false): boolean {
   if (original.type !== candidate.type) {
     return false;
   }
@@ -531,7 +532,7 @@ function hasExactLegacyTreeMatch(original: SceneNode, candidate: SceneNode, allo
     }
 
     for (let i = 0; i < original.children.length; i++) {
-      if (!hasExactLegacyTreeMatch(original.children[i], candidate.children[i], false)) {
+      if (!_hasExactLegacyTreeMatch(original.children[i], candidate.children[i], false)) {
         return false;
       }
     }
@@ -577,55 +578,35 @@ function buildTaggedSceneNodeMapping(node: SceneNode, mapping: Map<string, Scene
 function resolveVariantMappings(
   originalFrame: LocalizableContainerNode,
   targetFrame: LocalizableContainerNode,
-  locale: string,
-  persistCompatibilityMetadata = true
+  locale: string
 ): { ok: true; resolution: VariantResolution } | { ok: false; message: string } {
   const hasMetadata = hasStoredVariantMetadata(targetFrame, originalFrame.id, locale) || hasTaggedDescendants(targetFrame);
 
-  if (hasMetadata) {
-    const nodeMapping = new Map<string, TextNode>();
-    const sceneNodeMapping = new Map<string, SceneNode>();
-    const duplicates = new Set<string>();
-
-    buildTaggedTextNodeMapping(targetFrame, nodeMapping, duplicates);
-    buildTaggedSceneNodeMapping(targetFrame, sceneNodeMapping, duplicates);
-
-    if (duplicates.size > 0) {
-      return {
-        ok: false,
-        message: `Existing ${locale} variant has duplicate SmartLocal metadata and cannot be updated safely. Recreate the variant.`
-      };
-    }
-
-    return {
-      ok: true,
-      resolution: {
-        mode: 'tagged',
-        nodeMapping,
-        sceneNodeMapping
-      }
-    };
-  }
-
-  if (!hasExactLegacyTreeMatch(originalFrame, targetFrame, true)) {
+  if (!hasMetadata) {
     return {
       ok: false,
-      message: `Existing ${locale} variant has drifted from the source structure and cannot be updated safely. Recreate or migrate the variant.`
+      message: `Existing ${locale} variant is not tagged with SmartLocal metadata and cannot be updated safely. Recreate or migrate it manually.`
     };
   }
 
   const nodeMapping = new Map<string, TextNode>();
-  buildNodeMapping(originalFrame, targetFrame, nodeMapping);
   const sceneNodeMapping = new Map<string, SceneNode>();
-  buildSceneNodeMapping(originalFrame, targetFrame, sceneNodeMapping);
-  if (persistCompatibilityMetadata) {
-    setLocalizedNodeMetadata(originalFrame, targetFrame, locale, originalFrame.id, true);
+  const duplicates = new Set<string>();
+
+  buildTaggedTextNodeMapping(targetFrame, nodeMapping, duplicates);
+  buildTaggedSceneNodeMapping(targetFrame, sceneNodeMapping, duplicates);
+
+  if (duplicates.size > 0) {
+    return {
+      ok: false,
+      message: `Existing ${locale} variant has duplicate SmartLocal metadata and cannot be updated safely. Recreate the variant.`
+    };
   }
 
   return {
     ok: true,
     resolution: {
-      mode: 'compatibility',
+      mode: 'tagged',
       nodeMapping,
       sceneNodeMapping
     }
@@ -1161,6 +1142,10 @@ function createByteRequestId(): string {
   return `${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
 }
 
+function createUiRequestId(): string {
+  return `${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+}
+
 function handleImageBytesResponse(msg: Record<string, unknown>): void {
   const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
   if (!requestId) {
@@ -1316,6 +1301,81 @@ function getCandidatesForLocale(
   return fallback;
 }
 
+function buildTextNodeLookup(node: SceneNode): Map<string, TextNode> {
+  const mapping = new Map<string, TextNode>();
+  const textNodes = 'findAllWithCriteria' in node
+    ? node.findAllWithCriteria({ types: ['TEXT'] })
+    : (node.type === 'TEXT' ? [node] : []);
+
+  for (const textNode of textNodes) {
+    mapping.set(textNode.id, textNode);
+  }
+
+  return mapping;
+}
+
+function getMissingFontTextIds(
+  translationKeys: string[],
+  unknownTextIds: string[],
+  nodeMapping: Map<string, TextNode>
+): string[] {
+  const unknownIdSet = new Set(unknownTextIds);
+  const missingFontIds: string[] = [];
+
+  for (const textId of translationKeys) {
+    if (unknownIdSet.has(textId)) {
+      continue;
+    }
+
+    const textNode = nodeMapping.get(textId);
+    if (textNode && textNode.hasMissingFont) {
+      missingFontIds.push(textId);
+    }
+  }
+
+  return missingFontIds;
+}
+
+function getUnreplaceableImageIds(
+  sourceImages: ImageInfo[],
+  sceneNodeMapping: Map<string, SceneNode>
+): string[] {
+  const invalidIds: string[] = [];
+
+  for (const imageInfo of sourceImages) {
+    const targetNode = sceneNodeMapping.get(imageInfo.id);
+    if (!targetNode || !isNodeWithFills(targetNode) || targetNode.fills === figma.mixed) {
+      invalidIds.push(imageInfo.id);
+      continue;
+    }
+
+    const fills = targetNode.fills;
+    if (imageInfo.fillIndex < 0 || imageInfo.fillIndex >= fills.length) {
+      invalidIds.push(imageInfo.id);
+      continue;
+    }
+
+    if (fills[imageInfo.fillIndex].type !== 'IMAGE') {
+      invalidIds.push(imageInfo.id);
+    }
+  }
+
+  return invalidIds;
+}
+
+function buildOutputFormatExample(texts: TextInfo[], locale: string): string {
+  const translations: Record<string, string> = {};
+  for (const text of texts) {
+    translations[text.id] = `translated text for ${text.text}`;
+  }
+
+  return JSON.stringify({
+    localizations: {
+      [locale]: translations
+    }
+  }, null, 2);
+}
+
 function createIssue(code: string, message: string, severity: Severity = 'error'): MessageIssue {
   return {
     code,
@@ -1381,6 +1441,7 @@ function analyzeLocalizationRequest(
   extractTextNodes(originalFrame, sourceTexts);
   const sourceTextIds = sourceTexts.map(text => text.id);
   const sourceTextIdSet = new Set(sourceTextIds);
+  const sourceTextNodeLookup = buildTextNodeLookup(originalFrame);
   const sourceImages: ImageInfo[] = [];
   if (imageSource.enabled) {
     extractImageNodes(originalFrame, sourceImages);
@@ -1431,32 +1492,74 @@ function analyzeLocalizationRequest(
     }
 
     if (existingNode) {
-      const resolved = resolveVariantMappings(originalFrame, existingNode, locale, false);
-      if (!resolved.ok) {
+      const hasMetadata = hasStoredVariantMetadata(existingNode, originalFrame.id, locale) || hasTaggedDescendants(existingNode);
+      if (!hasMetadata) {
         issues.push(createIssue(
-          'unsafe-existing-variant',
-          resolved.message
+          'unsupported-legacy-variant',
+          `Existing ${locale} variant was not created by SmartLocal and cannot be updated safely. Recreate or migrate it manually.`
         ));
       } else {
-        const missingMappedTextIds = translationKeys.filter(
-          textId => !unknownTextIds.includes(textId) && !resolved.resolution.nodeMapping.has(textId)
-        );
-        if (missingMappedTextIds.length > 0) {
+        const resolved = resolveVariantMappings(originalFrame, existingNode, locale);
+        if (!resolved.ok) {
           issues.push(createIssue(
-            'missing-target-text-nodes',
-            `Existing ${locale} variant is missing ${missingMappedTextIds.length} mapped text nodes and cannot be updated safely.`
+            'unsafe-existing-variant',
+            resolved.message
           ));
-        }
-
-        if (willApplyImages) {
-          const missingMappedImageIds = sourceImages.filter(imageInfo => !resolved.resolution.sceneNodeMapping.has(imageInfo.id));
-          if (missingMappedImageIds.length > 0) {
+        } else {
+          const missingMappedTextIds = translationKeys.filter(
+            textId => !unknownTextIds.includes(textId) && !resolved.resolution.nodeMapping.has(textId)
+          );
+          if (missingMappedTextIds.length > 0) {
             issues.push(createIssue(
-              'missing-target-image-nodes',
-              `Existing ${locale} variant is missing ${missingMappedImageIds.length} mapped image nodes and cannot be updated safely.`
+              'missing-target-text-nodes',
+              `Existing ${locale} variant is missing ${missingMappedTextIds.length} mapped text nodes and cannot be updated safely.`
             ));
           }
+
+          if (translationCount > 0) {
+            const missingFontTextIds = getMissingFontTextIds(
+              translationKeys,
+              unknownTextIds,
+              resolved.resolution.nodeMapping
+            );
+            if (missingFontTextIds.length > 0) {
+              issues.push(createIssue(
+                'missing-fonts',
+                `Existing ${locale} variant has ${missingFontTextIds.length} text nodes with missing fonts. Resolve fonts before applying localization.`
+              ));
+            }
+          }
+
+          if (willApplyImages) {
+            const missingMappedImageIds = sourceImages.filter(imageInfo => !resolved.resolution.sceneNodeMapping.has(imageInfo.id));
+            if (missingMappedImageIds.length > 0) {
+              issues.push(createIssue(
+                'missing-target-image-nodes',
+                `Existing ${locale} variant is missing ${missingMappedImageIds.length} mapped image nodes and cannot be updated safely.`
+              ));
+            } else {
+              const unreplaceableImageIds = getUnreplaceableImageIds(sourceImages, resolved.resolution.sceneNodeMapping);
+              if (unreplaceableImageIds.length > 0) {
+                issues.push(createIssue(
+                  'unreplaceable-image-fills',
+                  `Existing ${locale} variant has ${unreplaceableImageIds.length} image fills that are no longer replaceable. Restore them before applying localization.`
+                ));
+              }
+            }
+          }
         }
+      }
+    } else if (translationCount > 0) {
+      const missingFontTextIds = getMissingFontTextIds(
+        translationKeys,
+        unknownTextIds,
+        sourceTextNodeLookup
+      );
+      if (missingFontTextIds.length > 0) {
+        issues.push(createIssue(
+          'missing-fonts',
+          `Selected source has ${missingFontTextIds.length} text nodes with missing fonts for locale ${locale}. Resolve fonts before applying localization.`
+        ));
       }
     }
 
@@ -1580,6 +1683,7 @@ figma.ui.onmessage = async (msg: { type: string;[key: string]: unknown }) => {
       texts,
       targetLanguages: languages
     };
+    const copyRequestId = createUiRequestId();
 
     const fullPrompt = `${promptTemplate}
 
@@ -1587,23 +1691,19 @@ INPUT:
 ${JSON.stringify(extractedData, null, 2)}
 
 OUTPUT FORMAT:
-{
-  "localizations": {
-    "${languages[0]}": {
-${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')}
-    }
-  }
-}`;
+${buildOutputFormatExample(texts, languages[0])}`;
 
     figma.ui.postMessage({
       type: 'copy-to-clipboard',
-      text: fullPrompt
+      text: fullPrompt,
+      copyRequestId
     });
 
     figma.ui.postMessage({
       type: 'prompt-generated',
       textCount: texts.length,
-      extractedData
+      extractedData,
+      copyRequestId
     });
 
     figma.notify(`📋 Prompt copied! Found ${texts.length} text nodes.`);
@@ -1658,17 +1758,20 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       },
       frames
     };
+    const copyRequestId = createUiRequestId();
 
     figma.ui.postMessage({
       type: 'copy-to-clipboard',
-      text: JSON.stringify(archiveData, null, 2)
+      text: JSON.stringify(archiveData, null, 2),
+      copyRequestId
     });
 
     figma.ui.postMessage({
       type: 'all-frames-content-extracted',
       frameCount: archiveData.frameCount,
       textCount: archiveData.totalTextCount,
-      archiveData
+      archiveData,
+      copyRequestId
     });
 
     figma.notify(`🗂️ Archived ${archiveData.frameCount} frames (${archiveData.totalTextCount} text nodes).`);
@@ -1676,9 +1779,10 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
   }
 
   if (msg.type === 'validate-localization') {
+    const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
     const validation = getValidatedSelection();
     if (!validation.valid) {
-      figma.ui.postMessage({ type: 'validation-error', message: validation.message });
+      figma.ui.postMessage({ type: 'validation-error', message: validation.message, requestId });
       return;
     }
 
@@ -1690,23 +1794,26 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     const analysis = analyzeLocalizationRequest(validation.node, localizations, requestedLocales, imageSource);
 
     if (!analysis.ok) {
-      figma.ui.postMessage({ type: 'validation-error', message: analysis.message });
+      figma.ui.postMessage({ type: 'validation-error', message: analysis.message, requestId });
       return;
     }
 
     figma.ui.postMessage({
       type: 'validation-result',
-      validation: analysis.payload
+      validation: analysis.payload,
+      requestId
     });
     return;
   }
 
   // Apply Localization
   if (msg.type === 'apply-localization') {
+    const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
     if (applyInFlight) {
       figma.ui.postMessage({
         type: 'apply-error',
-        message: 'Localization is already running. Wait for the current apply to finish before trying again.'
+        message: 'Localization is already running. Wait for the current apply to finish before trying again.',
+        requestId
       });
       return;
     }
@@ -1716,7 +1823,7 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       const message = validation.message === 'Please select a frame first'
         ? 'Please select the original frame'
         : validation.message;
-      figma.ui.postMessage({ type: 'apply-error', message });
+      figma.ui.postMessage({ type: 'apply-error', message, requestId });
       return;
     }
 
@@ -1731,7 +1838,8 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     if (!analysis.ok) {
       figma.ui.postMessage({
         type: 'apply-error',
-        message: analysis.message
+        message: analysis.message,
+        requestId
       });
       return;
     }
@@ -1739,7 +1847,8 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
     if (!analysis.payload.canApply) {
       figma.ui.postMessage({
         type: 'apply-error',
-        message: summarizeBlockingValidationIssues(analysis.payload)
+        message: summarizeBlockingValidationIssues(analysis.payload),
+        requestId
       });
       return;
     }
@@ -1795,13 +1904,6 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
               continue;
             }
             resolution = resolved.resolution;
-            if (resolution.mode === 'compatibility') {
-              outcome.issues.push(createIssue(
-                'legacy-variant-migrated',
-                `Existing ${locale} variant matched the legacy structure and was upgraded with SmartLocal metadata.`,
-                'warning'
-              ));
-            }
           } else {
             const clonedFrame = originalFrame.clone();
             clonedFrame.name = `${originalFrame.name}_${locale}`;
@@ -1860,7 +1962,7 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
             }
 
             const textNode = resolution.nodeMapping.get(originalId);
-            if (!textNode || textNode.characters.length === 0) {
+            if (!textNode) {
               continue;
             }
 
@@ -1868,7 +1970,7 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
               const fontName = textNode.fontName;
               if (fontName !== figma.mixed) {
                 await loadFontOnce(fontName);
-              } else {
+              } else if (textNode.characters.length > 0) {
                 const fontNames = textNode.getRangeAllFontNames(0, textNode.characters.length);
                 for (const fn of fontNames) {
                   await loadFontOnce(fn);
@@ -2185,7 +2287,8 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
       }
       figma.ui.postMessage({
         type: 'apply-error',
-        message: firstFailure ? firstFailure.message : 'Localization could not be applied safely. Review the validation results and try again.'
+        message: firstFailure ? firstFailure.message : 'Localization could not be applied safely. Review the validation results and try again.',
+        requestId
       });
       return;
     }
@@ -2216,7 +2319,8 @@ ${texts.map(t => `      "${t.id}": "translated text for ${t.text}"`).join(',\n')
 
     figma.ui.postMessage({
       type: 'apply-result',
-      result: applyResult
+      result: applyResult,
+      requestId
     });
 
     const notifyPrefix = partialSuccess ? '⚠️' : '✨';

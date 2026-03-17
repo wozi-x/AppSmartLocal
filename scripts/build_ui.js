@@ -3,19 +3,24 @@ const path = require('path');
 
 const UI_TEMPLATE = path.join(__dirname, '../ui.template.html');
 const PROMPT_FILE = path.join(__dirname, '../prompt.md');
+const UI_HELPERS_FILE = path.join(__dirname, '../ui_helpers.js');
 const UI_OUTPUT = path.join(__dirname, '../ui.html');
 const WATCH_MODE = process.argv.includes('--watch');
 
 function buildUi() {
     const template = fs.readFileSync(UI_TEMPLATE, 'utf8');
     const prompt = fs.readFileSync(PROMPT_FILE, 'utf8');
+    const uiHelpers = fs.readFileSync(UI_HELPERS_FILE, 'utf8');
 
-    if (!template.includes('{{PROMPT}}')) {
-        throw new Error('Template must contain {{PROMPT}} placeholder');
+    if (!template.includes('{{PROMPT}}') || !template.includes('{{UI_HELPERS}}')) {
+        throw new Error('Template must contain {{PROMPT}} and {{UI_HELPERS}} placeholders');
     }
 
     const safePrompt = prompt.replace(/<\/textarea/gi, '<\\/textarea');
-    const output = template.replace('{{PROMPT}}', safePrompt);
+    const safeUiHelpers = uiHelpers.replace(/<\/script/gi, '<\\/script');
+    const output = template
+        .replace('{{PROMPT}}', safePrompt)
+        .replace('{{UI_HELPERS}}', safeUiHelpers);
     fs.writeFileSync(UI_OUTPUT, output);
     console.log('✅ Generated ui.html with updated prompt');
 }
@@ -29,7 +34,7 @@ function watchFile(filepath, onChange) {
 }
 
 function startWatchMode() {
-    console.log('👀 Watching ui.template.html and prompt.md for changes...');
+    console.log('👀 Watching ui.template.html, prompt.md, and ui_helpers.js for changes...');
     let timeoutId = null;
     const rebuild = () => {
         if (timeoutId) {
@@ -46,6 +51,7 @@ function startWatchMode() {
 
     watchFile(UI_TEMPLATE, rebuild);
     watchFile(PROMPT_FILE, rebuild);
+    watchFile(UI_HELPERS_FILE, rebuild);
 }
 
 try {

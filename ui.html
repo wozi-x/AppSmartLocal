@@ -723,9 +723,254 @@ Return **only valid JSON**.
     </div>
 
     <script>
+        (function (globalScope) {
+    const LOCALE_PATTERN = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
+
+    function isObjectRecord(value) {
+        return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    function normalizeLocaleCode(value) {
+        if (typeof value !== 'string') {
+            return null;
+        }
+
+        const trimmed = value.trim().replace(/_/g, '-');
+        if (!trimmed || !LOCALE_PATTERN.test(trimmed)) {
+            return null;
+        }
+
+        try {
+            const canonical = Intl.getCanonicalLocales(trimmed)[0];
+            return canonical || trimmed;
+        } catch (_err) {
+            return trimmed;
+        }
+    }
+
+    function parseLocaleInput(value) {
+        if (typeof value !== 'string') {
+            return [];
+        }
+
+        const locales = [];
+        const seen = new Set();
+        for (const rawLocale of value.split(',')) {
+            const normalized = normalizeLocaleCode(rawLocale);
+            if (!normalized) {
+                continue;
+            }
+
+            const key = normalized.toLowerCase();
+            if (seen.has(key)) {
+                continue;
+            }
+
+            seen.add(key);
+            locales.push(normalized);
+        }
+
+        return locales;
+    }
+
+    function sanitizeTranslations(value) {
+        if (!isObjectRecord(value)) {
+            return null;
+        }
+
+        const translations = {};
+        for (const [nodeId, text] of Object.entries(value)) {
+            if (typeof text === 'string') {
+                translations[nodeId] = text;
+            }
+        }
+
+        return translations;
+    }
+
+    function mergeLocalizations(target, source) {
+        for (const [locale, translations] of Object.entries(source)) {
+            if (!Object.prototype.hasOwnProperty.call(target, locale)) {
+                target[locale] = {};
+            }
+
+            for (const [nodeId, text] of Object.entries(translations)) {
+                target[locale][nodeId] = text;
+            }
+        }
+    }
+
+    function sanitizeLocalizations(value, requireLocaleLikeKeys) {
+        if (!isObjectRecord(value)) {
+            return null;
+        }
+
+        const localizations = {};
+        for (const [locale, translations] of Object.entries(value)) {
+            const normalizedLocale = normalizeLocaleCode(locale);
+            if (requireLocaleLikeKeys && !normalizedLocale) {
+                continue;
+            }
+
+            if (!normalizedLocale) {
+                continue;
+            }
+
+            const sanitizedTranslations = sanitizeTranslations(translations);
+            if (!sanitizedTranslations) {
+                continue;
+            }
+
+            if (!Object.prototype.hasOwnProperty.call(localizations, normalizedLocale)) {
+                localizations[normalizedLocale] = {};
+            }
+
+            mergeLocalizations(localizations, {
+                [normalizedLocale]: sanitizedTranslations
+            });
+        }
+
+        return Object.keys(localizations).length > 0 ? localizations : null;
+    }
+
+    function extractLocalizationsFromResponse(response) {
+        if (!isObjectRecord(response)) {
+            return null;
+        }
+
+        const direct = sanitizeLocalizations(response.localizations, false);
+        if (direct) {
+            return direct;
+        }
+
+        const nestedContainers = ['output', 'result', 'data', 'combinedOutput'];
+        for (const key of nestedContainers) {
+            const container = response[key];
+            if (!isObjectRecord(container)) {
+                continue;
+            }
+
+            const nestedLocalizations = sanitizeLocalizations(container.localizations, false);
+            if (nestedLocalizations) {
+                return nestedLocalizations;
+            }
+        }
+
+        if (Array.isArray(response.frames)) {
+            const merged = {};
+
+            for (const frame of response.frames) {
+                if (!isObjectRecord(frame)) {
+                    continue;
+                }
+
+                const candidates = [
+                    frame.localizations,
+                    isObjectRecord(frame.output) ? frame.output.localizations : null,
+                    isObjectRecord(frame.result) ? frame.result.localizations : null,
+                    isObjectRecord(frame.data) ? frame.data.localizations : null
+                ];
+
+                for (const candidate of candidates) {
+                    const frameLocalizations = sanitizeLocalizations(candidate, false);
+                    if (frameLocalizations) {
+                        mergeLocalizations(merged, frameLocalizations);
+                    }
+                }
+            }
+
+            if (Object.keys(merged).length > 0) {
+                return merged;
+            }
+        }
+
+        return sanitizeLocalizations(response, true);
+    }
+
+    function buildValidationSignature(input) {
+        const selectionId = typeof input.selectionId === 'string' ? input.selectionId : '';
+        const languagesValue = typeof input.languagesValue === 'string' ? input.languagesValue : '';
+        const responseText = typeof input.responseText === 'string' ? input.responseText : '';
+        const imageSourceEnabled = Boolean(input.imageSourceEnabled);
+        const imageCatalogEntries = Number.isInteger(input.imageCatalogEntries) ? input.imageCatalogEntries : 0;
+
+        return JSON.stringify({
+            selectionId,
+            languages: parseLocaleInput(languagesValue).join(','),
+            response: responseText.trim(),
+            imageSourceEnabled,
+            imageCatalogEntries
+        });
+    }
+
+    function parseImageCatalogPath(relativePath) {
+        if (typeof relativePath !== 'string') {
+            return null;
+        }
+
+        const normalizedPath = relativePath.replace(/\\/g, '/').trim();
+        if (!normalizedPath) {
+            return null;
+        }
+
+        const pathSegments = normalizedPath.split('/').filter(Boolean);
+        if (pathSegments.length < 3) {
+            return null;
+        }
+
+        const locale = normalizeLocaleCode(pathSegments[1]);
+        if (!locale) {
+            return null;
+        }
+
+        return {
+            locale,
+            relPathFromLocale: pathSegments.slice(1).join('/')
+        };
+    }
+
+    function isMatchingRequestId(expectedRequestId, actualRequestId) {
+        return typeof expectedRequestId === 'string'
+            && expectedRequestId.length > 0
+            && expectedRequestId === actualRequestId;
+    }
+
+    const api = {
+        LOCALE_PATTERN,
+        isObjectRecord,
+        normalizeLocaleCode,
+        parseLocaleInput,
+        sanitizeTranslations,
+        sanitizeLocalizations,
+        mergeLocalizations,
+        extractLocalizationsFromResponse,
+        buildValidationSignature,
+        parseImageCatalogPath,
+        isMatchingRequestId
+    };
+
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = api;
+    }
+
+    globalScope.SmartLocalUiHelpers = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+
         const ALLOWED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
         const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
         const MAX_CATALOG_ENTRIES = 5000;
+        const FIGMA_ORIGIN = 'https://www.figma.com';
+        const PLUGIN_ID = '1589498837344174364';
+        const {
+            buildValidationSignature,
+            extractLocalizationsFromResponse,
+            isMatchingRequestId,
+            normalizeLocaleCode,
+            parseImageCatalogPath,
+            parseLocaleInput,
+            sanitizeLocalizations
+        } = globalThis.SmartLocalUiHelpers;
 
         const languagesInput = document.getElementById('languages');
         const promptTextarea = document.getElementById('prompt');
@@ -768,15 +1013,20 @@ Return **only valid JSON**.
         let lastGeneratedPrompt = '';
         let lastClipboardCopySucceeded = false;
         let isSelectionValid = false;
+        let currentSelectionId = '';
         let isApplying = false;
+        let validationInFlight = false;
         let lastValidationResult = null;
         let lastValidationReport = null;
         let lastValidationSignature = '';
         let pendingValidationSignature = '';
+        let pendingValidationRequestId = '';
         let lastPreparedRequest = null;
         let pendingPreparedRequest = null;
+        let pendingApplyRequestId = '';
         let lastApplyResult = null;
         let lastApplyReport = null;
+        const pendingClipboardCopies = new Map();
         const IMAGE_DEBUG_ENABLED = false;
 
         function imageDebug(message, payload) {
@@ -800,140 +1050,33 @@ Return **only valid JSON**.
         }
 
         function getTargetLanguages() {
-            return languagesInput.value
-                .split(',')
-                .map(value => value.trim())
-                .filter(value => value.length > 0);
+            return parseLocaleInput(languagesInput.value);
         }
 
-        function isObjectRecord(value) {
-            return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-        }
-
-        function sanitizeTranslations(value) {
-            if (!isObjectRecord(value)) {
-                return null;
-            }
-
-            const translations = {};
-            for (const [nodeId, text] of Object.entries(value)) {
-                if (typeof text === 'string') {
-                    translations[nodeId] = text;
-                }
-            }
-
-            return translations;
-        }
-
-        function sanitizeLocalizations(value, requireLocaleLikeKeys = false) {
-            if (!isObjectRecord(value)) {
-                return null;
-            }
-
-            const localizations = {};
-            for (const [locale, translations] of Object.entries(value)) {
-                if (requireLocaleLikeKeys && !isLocaleLikeSegment(locale)) {
-                    continue;
-                }
-
-                const sanitizedTranslations = sanitizeTranslations(translations);
-                if (!sanitizedTranslations) {
-                    continue;
-                }
-
-                localizations[locale] = sanitizedTranslations;
-            }
-
-            return Object.keys(localizations).length > 0 ? localizations : null;
-        }
-
-        function mergeLocalizations(target, source) {
-            for (const [locale, translations] of Object.entries(source)) {
-                if (!Object.prototype.hasOwnProperty.call(target, locale)) {
-                    target[locale] = {};
-                }
-
-                for (const [nodeId, text] of Object.entries(translations)) {
-                    target[locale][nodeId] = text;
-                }
-            }
-        }
-
-        function extractLocalizationsFromResponse(response) {
-            if (!isObjectRecord(response)) {
-                return null;
-            }
-
-            const direct = sanitizeLocalizations(response.localizations);
-            if (direct) {
-                return direct;
-            }
-
-            const nestedContainers = ['output', 'result', 'data', 'combinedOutput'];
-            for (const key of nestedContainers) {
-                const container = response[key];
-                if (!isObjectRecord(container)) {
-                    continue;
-                }
-
-                const nestedLocalizations = sanitizeLocalizations(container.localizations);
-                if (nestedLocalizations) {
-                    return nestedLocalizations;
-                }
-            }
-
-            if (Array.isArray(response.frames)) {
-                const merged = {};
-
-                for (const frame of response.frames) {
-                    if (!isObjectRecord(frame)) {
-                        continue;
-                    }
-
-                    const candidates = [
-                        frame.localizations,
-                        isObjectRecord(frame.output) ? frame.output.localizations : null,
-                        isObjectRecord(frame.result) ? frame.result.localizations : null,
-                        isObjectRecord(frame.data) ? frame.data.localizations : null
-                    ];
-
-                    for (const candidate of candidates) {
-                        const frameLocalizations = sanitizeLocalizations(candidate);
-                        if (frameLocalizations) {
-                            mergeLocalizations(merged, frameLocalizations);
-                        }
-                    }
-                }
-
-                if (Object.keys(merged).length > 0) {
-                    return merged;
-                }
-            }
-
-            return sanitizeLocalizations(response, true);
+        function postToPlugin(pluginMessage) {
+            parent.postMessage({
+                pluginMessage,
+                pluginId: PLUGIN_ID
+            }, FIGMA_ORIGIN);
         }
 
         function saveLocales() {
             if (saveLocalesTimeout) clearTimeout(saveLocalesTimeout);
             saveLocalesTimeout = setTimeout(() => {
-                parent.postMessage({
-                    pluginMessage: {
-                        type: 'save-locales',
-                        locales: languagesInput.value
-                    }
-                }, '*');
+                postToPlugin({
+                    type: 'save-locales',
+                    locales: languagesInput.value
+                });
             }, 500);
         }
 
         function savePrompt() {
             if (savePromptTimeout) clearTimeout(savePromptTimeout);
             savePromptTimeout = setTimeout(() => {
-                parent.postMessage({
-                    pluginMessage: {
-                        type: 'save-prompt',
-                        prompt: promptTextarea.value
-                    }
-                }, '*');
+                postToPlugin({
+                    type: 'save-prompt',
+                    prompt: promptTextarea.value
+                });
             }, 500);
         }
 
@@ -950,13 +1093,17 @@ Return **only valid JSON**.
             return hasResponse || (isImageSourceEnabled() && hasReadyImageCatalog());
         }
 
+        function createRequestId() {
+            return `${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+        }
+
         function getCurrentValidationSignature() {
-            return JSON.stringify({
-                selection: isSelectionValid ? selectionText.textContent : '',
-                languages: languagesInput.value.trim(),
-                response: responseTextarea.value.trim(),
+            return buildValidationSignature({
+                selectionId: isSelectionValid ? currentSelectionId : '',
+                languagesValue: languagesInput.value,
+                responseText: responseTextarea.value,
                 imageSourceEnabled: isImageSourceEnabled(),
-                imageCatalogCount: hasReadyImageCatalog() ? imageCatalog.entries.length : 0
+                imageCatalogEntries: hasReadyImageCatalog() ? imageCatalog.entries.length : 0
             });
         }
 
@@ -986,7 +1133,7 @@ Return **only valid JSON**.
         function updateStepIndicator() {
             setStepState(stepSelect, isSelectionValid ? 'complete' : '');
             setStepState(stepGenerate, lastGeneratedPrompt ? 'complete' : (isSelectionValid ? 'active' : ''));
-            setStepState(stepValidate, validationIsFresh() ? 'complete' : (hasReadyInput() && isSelectionValid ? 'active' : ''));
+            setStepState(stepValidate, validationInFlight ? 'active' : (validationIsFresh() ? 'complete' : (hasReadyInput() && isSelectionValid ? 'active' : '')));
             setStepState(stepApply, isApplying ? 'active' : (lastApplyResult ? 'complete' : ''));
         }
 
@@ -1000,7 +1147,7 @@ Return **only valid JSON**.
         function updateActionButtons() {
             const readyInput = hasReadyInput();
             const freshValidation = validationIsFresh();
-            const canValidate = isSelectionValid && readyInput && !isApplying;
+            const canValidate = isSelectionValid && readyInput && !isApplying && !validationInFlight;
             let applyTitle = 'Validate the current response before applying';
             let canApply = false;
 
@@ -1016,6 +1163,8 @@ Return **only valid JSON**.
                 applyTitle = 'Inputs changed after validation. Validate again before applying';
             } else if (!lastValidationResult.canApply) {
                 applyTitle = 'Resolve validation issues before applying';
+            } else if (validationInFlight) {
+                applyTitle = 'Validation is currently running';
             } else if (isApplying) {
                 applyTitle = 'Localization is currently running';
             } else {
@@ -1032,14 +1181,12 @@ Return **only valid JSON**.
         function saveImageSource() {
             if (saveImageSourceTimeout) clearTimeout(saveImageSourceTimeout);
             saveImageSourceTimeout = setTimeout(() => {
-                parent.postMessage({
-                    pluginMessage: {
-                        type: 'save-image-source',
-                        imageSource: {
-                            enabled: isImageSourceEnabled()
-                        }
+                postToPlugin({
+                    type: 'save-image-source',
+                    imageSource: {
+                        enabled: isImageSourceEnabled()
                     }
-                }, '*');
+                });
             }, 500);
         }
 
@@ -1067,24 +1214,40 @@ Return **only valid JSON**.
             applyError.className = 'error-message show';
         }
 
+        function setValidationState(nextValue) {
+            validationInFlight = nextValue;
+            updateActionButtons();
+            updateStepIndicator();
+        }
+
+        function trackClipboardCopy(copyRequestId, text) {
+            if (typeof copyRequestId !== 'string' || copyRequestId.length === 0) {
+                return;
+            }
+
+            const copyPromise = copyText(text).then(result => {
+                lastClipboardCopySucceeded = result;
+                return result;
+            });
+            pendingClipboardCopies.set(copyRequestId, copyPromise);
+        }
+
+        async function consumeClipboardCopyResult(copyRequestId) {
+            if (typeof copyRequestId !== 'string' || copyRequestId.length === 0) {
+                return false;
+            }
+
+            const copyPromise = pendingClipboardCopies.get(copyRequestId);
+            if (!copyPromise) {
+                return false;
+            }
+
+            pendingClipboardCopies.delete(copyRequestId);
+            return copyPromise;
+        }
+
         function createImageFileKey(locale, relPath, size, lastModified, index) {
             return `${locale}::${relPath}::${size}::${lastModified}::${index}`;
-        }
-
-        function isLocaleLikeSegment(segment) {
-            if (typeof segment !== 'string') return false;
-            const value = segment.trim();
-            if (!value) return false;
-            return /^[A-Za-z]{2}(?:-[A-Za-z0-9]+)*$/.test(value);
-        }
-
-        function findLocaleIndex(pathSegments) {
-            for (let i = 0; i < pathSegments.length - 1; i++) {
-                if (isLocaleLikeSegment(pathSegments[i])) {
-                    return i;
-                }
-            }
-            return -1;
         }
 
         function buildImageCatalog(files) {
@@ -1092,7 +1255,6 @@ Return **only valid JSON**.
             const entries = [];
             const fileMap = new Map();
             const locales = new Set();
-            const sampleLocaleMappings = [];
             let skippedUnsupported = 0;
             let skippedOversized = 0;
             let skippedNoLocale = 0;
@@ -1100,25 +1262,15 @@ Return **only valid JSON**.
 
             for (const file of files) {
                 const relativePath = (file.webkitRelativePath || file.name || '').replace(/\\/g, '/').trim();
-                if (!relativePath) {
+                const localePath = parseImageCatalogPath(relativePath);
+                if (!localePath) {
                     skippedNoLocale++;
                     continue;
                 }
 
+                const locale = localePath.locale;
+                const relPathFromLocale = localePath.relPathFromLocale;
                 const pathSegments = relativePath.split('/').filter(Boolean);
-                if (pathSegments.length < 2) {
-                    skippedNoLocale++;
-                    continue;
-                }
-
-                const localeIndex = findLocaleIndex(pathSegments);
-                if (localeIndex < 0) {
-                    skippedNoLocale++;
-                    continue;
-                }
-
-                const locale = pathSegments[localeIndex].trim();
-                const relPathFromLocale = pathSegments.slice(localeIndex).join('/');
                 const filename = pathSegments[pathSegments.length - 1];
                 const extMatch = filename.match(/\.([^.]+)$/);
                 if (!extMatch) {
@@ -1159,13 +1311,6 @@ Return **only valid JSON**.
                 });
                 fileMap.set(key, file);
                 locales.add(locale);
-                if (sampleLocaleMappings.length < 8) {
-                    sampleLocaleMappings.push({
-                        relativePath,
-                        locale,
-                        relPathFromLocale
-                    });
-                }
             }
 
             if (exceededLimit) {
@@ -1221,7 +1366,11 @@ Return **only valid JSON**.
             lastValidationResult = null;
             lastValidationReport = null;
             lastValidationSignature = '';
+            pendingValidationSignature = '';
+            pendingValidationRequestId = '';
             lastPreparedRequest = null;
+            pendingPreparedRequest = null;
+            setValidationState(false);
             updateActionButtons();
             renderReviewState();
             updateStepIndicator();
@@ -1257,7 +1406,8 @@ Return **only valid JSON**.
                     return { ok: false, message: 'Invalid JSON format. Fix the response before validating or applying.' };
                 }
 
-                if (!response.localizations || typeof response.localizations !== 'object') {
+                const directLocalizations = sanitizeLocalizations(response.localizations, false);
+                if (!directLocalizations) {
                     const extractedLocalizations = extractLocalizationsFromResponse(response);
                     if (extractedLocalizations) {
                         localizations = extractedLocalizations;
@@ -1265,7 +1415,7 @@ Return **only valid JSON**.
                         return { ok: false, message: 'Could not find localizations. Use {"localizations": {...}} or a locale map like {"de-DE": {...}}.' };
                     }
                 } else {
-                    localizations = response.localizations;
+                    localizations = directLocalizations;
                 }
             }
 
@@ -1428,12 +1578,10 @@ Return **only valid JSON**.
 
         extractAllFramesContentBtn.addEventListener('click', () => {
             hideStatus();
-            parent.postMessage({
-                pluginMessage: {
-                    type: 'extract-all-frames-content',
-                    languages: getTargetLanguages()
-                }
-            }, '*');
+            postToPlugin({
+                type: 'extract-all-frames-content',
+                languages: getTargetLanguages()
+            });
         });
 
         generateBtn.onclick = () => {
@@ -1444,16 +1592,19 @@ Return **only valid JSON**.
             }
 
             hideStatus();
-            parent.postMessage({
-                pluginMessage: {
-                    type: 'generate-prompt',
-                    languages,
-                    promptTemplate: promptTextarea.value
-                }
-            }, '*');
+            postToPlugin({
+                type: 'generate-prompt',
+                languages,
+                promptTemplate: promptTextarea.value
+            });
         };
 
         validateBtn.onclick = () => {
+            if (validationInFlight) {
+                showStatus('Validation is already running. Wait for the current review to finish.', 'info');
+                return;
+            }
+
             const prepared = prepareRequestPayload();
             if (!prepared.ok) {
                 showApplyError(prepared.message);
@@ -1461,16 +1612,18 @@ Return **only valid JSON**.
             }
 
             hideStatus();
+            const requestId = createRequestId();
             pendingPreparedRequest = prepared;
             pendingValidationSignature = getCurrentValidationSignature();
-            parent.postMessage({
-                pluginMessage: {
-                    type: 'validate-localization',
-                    localizations: prepared.localizations,
-                    locales: prepared.languages,
-                    imageSource: prepared.imageSource
-                }
-            }, '*');
+            pendingValidationRequestId = requestId;
+            setValidationState(true);
+            postToPlugin({
+                type: 'validate-localization',
+                requestId,
+                localizations: prepared.localizations,
+                locales: prepared.languages,
+                imageSource: prepared.imageSource
+            });
             showStatus('Validation started. Reviewing locale coverage and variant safety…', 'info');
         };
 
@@ -1481,15 +1634,16 @@ Return **only valid JSON**.
             }
 
             hideStatus();
+            const requestId = createRequestId();
+            pendingApplyRequestId = requestId;
             setApplyingState(true);
-            parent.postMessage({
-                pluginMessage: {
-                    type: 'apply-localization',
-                    localizations: lastPreparedRequest.localizations,
-                    locales: lastPreparedRequest.languages,
-                    imageSource: lastPreparedRequest.imageSource
-                }
-            }, '*');
+            postToPlugin({
+                type: 'apply-localization',
+                requestId,
+                localizations: lastPreparedRequest.localizations,
+                locales: lastPreparedRequest.languages,
+                imageSource: lastPreparedRequest.imageSource
+            });
             showStatus('Applying localization…', 'info');
         };
 
@@ -1503,59 +1657,55 @@ Return **only valid JSON**.
                 const file = imageFilesByKey.get(fileKey);
 
                 if (!requestId || !fileKey || !file) {
-                    parent.postMessage({
-                        pluginMessage: {
-                            type: 'image-bytes-response',
-                            requestId,
-                            fileKey,
-                            ok: false,
-                            error: 'File not found'
-                        }
-                    }, '*');
+                    postToPlugin({
+                        type: 'image-bytes-response',
+                        requestId,
+                        fileKey,
+                        ok: false,
+                        error: 'File not found'
+                    });
                     return;
                 }
 
                 try {
                     const bytes = new Uint8Array(await file.arrayBuffer());
-                    parent.postMessage({
-                        pluginMessage: {
-                            type: 'image-bytes-response',
-                            requestId,
-                            fileKey,
-                            ok: true,
-                            bytes
-                        }
-                    }, '*');
+                    postToPlugin({
+                        type: 'image-bytes-response',
+                        requestId,
+                        fileKey,
+                        ok: true,
+                        bytes
+                    });
                 } catch (err) {
-                    parent.postMessage({
-                        pluginMessage: {
-                            type: 'image-bytes-response',
-                            requestId,
-                            fileKey,
-                            ok: false,
-                            error: 'Read failed'
-                        }
-                    }, '*');
+                    postToPlugin({
+                        type: 'image-bytes-response',
+                        requestId,
+                        fileKey,
+                        ok: false,
+                        error: 'Read failed'
+                    });
                 }
                 return;
             }
 
             if (msg.type === 'copy-to-clipboard') {
                 const copiedText = typeof msg.text === 'string' ? msg.text : '';
+                const copyRequestId = typeof msg.copyRequestId === 'string' ? msg.copyRequestId : '';
                 lastGeneratedPrompt = copiedText;
                 generatedPromptTextarea.value = copiedText;
-                lastClipboardCopySucceeded = await copyText(copiedText);
+                trackClipboardCopy(copyRequestId, copiedText);
                 return;
             }
 
             if (msg.type === 'prompt-generated') {
                 extractedData = msg.extractedData;
                 const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
+                const copied = await consumeClipboardCopyResult(msg.copyRequestId);
                 showStatus(
-                    lastClipboardCopySucceeded
+                    copied
                         ? `Prompt copied! Found ${textCount} text nodes.`
                         : `Prompt generated (clipboard blocked). Found ${textCount} text nodes. Copy from Generated Prompt box.`,
-                    lastClipboardCopySucceeded ? 'success' : 'info'
+                    copied ? 'success' : 'info'
                 );
                 updateStepIndicator();
                 return;
@@ -1565,11 +1715,12 @@ Return **only valid JSON**.
                 extractedData = msg.archiveData || null;
                 const frameCount = typeof msg.frameCount === 'number' ? msg.frameCount : 0;
                 const textCount = typeof msg.textCount === 'number' ? msg.textCount : 0;
+                const copied = await consumeClipboardCopyResult(msg.copyRequestId);
                 showStatus(
-                    lastClipboardCopySucceeded
+                    copied
                         ? `Archive copied! ${frameCount} frames, ${textCount} text nodes. Translate it, then validate before applying.`
                         : `Archive generated for ${frameCount} frames (clipboard blocked). Copy from Generated Prompt box.`,
-                    lastClipboardCopySucceeded ? 'success' : 'info'
+                    copied ? 'success' : 'info'
                 );
                 return;
             }
@@ -1580,10 +1731,18 @@ Return **only valid JSON**.
             }
 
             if (msg.type === 'validation-result') {
+                if (!isMatchingRequestId(pendingValidationRequestId, msg.requestId)) {
+                    return;
+                }
+
+                setValidationState(false);
+                pendingValidationRequestId = '';
                 lastValidationResult = msg.validation || null;
                 lastValidationReport = buildValidationReport(lastValidationResult);
                 lastValidationSignature = pendingValidationSignature;
                 lastPreparedRequest = pendingPreparedRequest;
+                pendingValidationSignature = '';
+                pendingPreparedRequest = null;
                 renderReviewState();
                 updateActionButtons();
                 updateStepIndicator();
@@ -1602,11 +1761,24 @@ Return **only valid JSON**.
             }
 
             if (msg.type === 'validation-error') {
+                if (!isMatchingRequestId(pendingValidationRequestId, msg.requestId)) {
+                    return;
+                }
+
+                setValidationState(false);
+                pendingValidationRequestId = '';
+                pendingValidationSignature = '';
+                pendingPreparedRequest = null;
                 showApplyError(msg.message);
                 return;
             }
 
             if (msg.type === 'apply-result') {
+                if (!isMatchingRequestId(pendingApplyRequestId, msg.requestId)) {
+                    return;
+                }
+
+                pendingApplyRequestId = '';
                 setApplyingState(false);
                 lastApplyResult = msg.result || null;
                 lastApplyReport = buildApplyReport(lastApplyResult);
@@ -1631,6 +1803,11 @@ Return **only valid JSON**.
             }
 
             if (msg.type === 'apply-error') {
+                if (!isMatchingRequestId(pendingApplyRequestId, msg.requestId)) {
+                    return;
+                }
+
+                pendingApplyRequestId = '';
                 setApplyingState(false);
                 showApplyError(msg.message);
                 return;
@@ -1638,6 +1815,7 @@ Return **only valid JSON**.
 
             if (msg.type === 'selection-changed') {
                 isSelectionValid = Boolean(msg.isValid);
+                currentSelectionId = typeof msg.selectionId === 'string' ? msg.selectionId : '';
                 const nodeName = typeof msg.nodeName === 'string' ? msg.nodeName : '';
                 const message = typeof msg.message === 'string' ? msg.message : '';
 
@@ -1677,7 +1855,7 @@ Return **only valid JSON**.
         updateActionButtons();
         updateStepIndicator();
 
-        parent.postMessage({ pluginMessage: { type: 'ui-ready' } }, '*');
+        postToPlugin({ type: 'ui-ready' });
     </script>
 </body>
 
